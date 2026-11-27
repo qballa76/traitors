@@ -2609,11 +2609,12 @@ function load(){ try{ const raw = localStorage.getItem(KEY); if(raw) S = JSON.pa
 function ghostSync(){
   if (!S.gid) return;
   if (S.phase==="over" && !S.wAwarded){ S.wAwarded = true; S.ghostPts = S.ghostPts||{}; Object.entries(S.wpred||{}).forEach(([g,v]) => { if (v===S.winner) S.ghostPts[g] = (S.ghostPts[g]||0) + 2; }); }
-  const ghosts = S.players.filter(p=>p.status!=="alive");
-  const tr = S.players.filter(p=>p.traitor).map(p=>p.name);
-  const sig = ghosts.map(g=>g.name).join(",") + "|" + tr.join(",");
-  if (sig === S.ghostSig) return; S.ghostSig = sig;
-  ghosts.forEach(g => publish(g.pt, {k:"ghost", t: tr}));
+  const ghosts = S.players.filter(p=>p.status!=="alive"); if (!ghosts.length) return;
+  if (!S.ghtid) S.ghtid = "tg"+rid(18);
+  const tr = S.players.filter(p=>p.traitor).map(p=>p.name).join(",");
+  if (tr !== S.ghostTr){ S.ghostTr = tr; publish(S.ghtid, {k:"ghost", t: tr.split(",")}); }
+  S.ghostSent = S.ghostSent||[];
+  ghosts.filter(g=>!S.ghostSent.includes(g.name)).forEach(g => { S.ghostSent.push(g.name); publish(g.pt, {k:"ghost", g: S.ghtid}); });
 }
 function save(){ if (S){ paceCheck(); ghostSync(); } try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} broadcast(); }
 // ---------- auto pacing ----------
@@ -2653,6 +2654,15 @@ function paceTick(){
 }
 function leftText(){ const m = Math.round((S.dueAt - Date.now())/60000); return m<=0 ? "now" : "in "+m+" min"; }
 setInterval(() => { try{ paceTick(); }catch(e){} }, 10000);
+let quota = null;
+function quotaText(){ if (!quota) return ""; const left = quota.left; return left < 60 ? `<b style="color:var(--blood)">⚠ Only ${left} live messages left today on this wifi.</b> Ask guests to switch their phones to mobile data.` : `Live messages left today: ${left} of ${quota.max}`; }
+function checkQuota(){ if (view!=="host" || !S) return;
+  fetch(RELAY + "v1/account").then(r => r.ok ? r.json() : null).then(j => { if (!j || !j.limits || !j.stats) return;
+    const was = quota; quota = {left: j.stats.messages_remaining, max: j.limits.messages};
+    const q = document.getElementById("quota"); if (q) q.innerHTML = quotaText();
+    if (quota.left < 60 && (!was || was.left >= 60)) buzz("Running low on live messages for today. Ask guests to switch to mobile data.");
+  }).catch(()=>{}); }
+setInterval(checkQuota, 3*60000); setTimeout(checkQuota, 4000);
 function paceCard(){
   if (!S.pace) return "";
   if (S.phase==="final") return `<div class="card" style="border-color:var(--gold)"><p>⏱ <b>Endgame.</b> No more timers. Finish it whenever you're ready.</p></div>`;
@@ -2764,7 +2774,7 @@ function renderPersonal(){
         renderPersonal(); return; }
       else if (m.k==="refused"){ answered = true; }
       else if (m.k==="shield"){ myShield = m; claimMsg = ""; }
-      else if (m.k==="ghost"){ ghostInfo = m.t; }
+      else if (m.k==="ghost"){ if (m.t) ghostInfo = m.t; if (m.g && !ghostSub){ ghostSub = true; subscribe([m.g], (tp, mm) => { if (mm.k==="ghost" && mm.t) ghostInfo = mm.t; else if (mm.k==="gshield") gShieldMsg = mm; renderLive(); }, ()=>{}); } }
       else if (m.k==="gshield"){ gShieldMsg = m; }
       else if (m.k==="gans" && Array.isArray(m.ans)){ if (!myGAns || myGAns.round<=m.round) myGAns = {round:m.round, ans:m.ans.slice()}; }
       else if (m.k==="gvote"){ myGVote = {round:m.round, v:m.v}; }
@@ -2851,9 +2861,9 @@ function renderLive(){
   const rch = $("#rkChange"); if (rch) rch.onclick = () => { submitted = false; renderLive(); };
   const rs = $("#rkSubmit"); if (rs) rs.onclick = () => { submitted = true;
     if (amTraitor()){ picks[me] = myList.slice(); publish(personal.tid, {k:"pick", round: live.round, a: live.redo||0, by: me, v: myList.slice()}); }
-    else publish(personal.pt, {k:"sus", round: live.round, a: live.redo||0, v: myList.slice()});
+    else lsSet("tt-sus-"+personal.pt, {round: live.round, a: live.redo||0, v: myList.slice()});
     renderLive(); };
-  el.querySelectorAll("[data-sus]").forEach(b => b.onclick = () => { mySus = b.dataset.sus; publish(personal.pt, {k:"sus", round: live.round, v: mySus}); renderLive(); });
+  el.querySelectorAll("[data-sus]").forEach(b => b.onclick = () => { mySus = b.dataset.sus; renderLive(); });
   const mo = $("#mOpen"); if (mo) mo.onclick = () => { murderOpen = true; renderLive(); };
   const mh = $("#mHide"); if (mh) mh.onclick = () => { murderOpen = false; renderLive(); };
   const ci = $("#claimIn"); if (ci) ci.oninput = e => { claimDraft = e.target.value; };
@@ -2875,9 +2885,11 @@ function offerPanel(){
    <button class="primary wide" id="offYes">Join the Traitors</button>
    <button class="wide" id="offNo">Refuse, and be murdered</button></div>`;
 }
-let myGAns = null, trivQ = null, trivStarted = false;
+let ghostSub = false, myGAns = null, trivQ = null, trivStarted = false;
 setInterval(() => { const t = document.getElementById("tqTime"); if (!t || !trivQ || !live || !myGAns) return; const left = Math.ceil((trivQ.end-Date.now())/1000); t.textContent = Math.max(0,left); if (left<=0 && myGAns.round===trivQ.round && myGAns.ans.length===trivQ.i){ ghostAnswer(""); } }, 500);
-function ghostAnswer(v){ myGAns.ans.push(v); trivQ = null; publish(personal.pt, {k:"gans", round: myGAns.round, ans: myGAns.ans.slice()}); renderLive(); }
+function lsGet(k){ try{ return JSON.parse(localStorage.getItem(k)); }catch(e){ return null; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function ghostAnswer(v){ myGAns.ans.push(v); trivQ = null; lsSet("tt-gans-"+personal.pt, myGAns); if (myGAns.ans.length>=GQN) publish(personal.pt, {k:"gans", round: myGAns.round, ans: myGAns.ans.slice()}); renderLive(); }
 let ghostInfo = null, myGVote = null, myPred = {}, myWPred = null, gShieldMsg = null, showTraitors = false;
 function ghostPanel(P, mine){
   const how = mine.s==="m" ? "murdered" : "banished";
@@ -2893,7 +2905,7 @@ function ghostPanel(P, mine){
   if (live.gs){
     if (live.phase==="mission" || live.phase==="table" || live.phase==="lobby"){
       const mode = live.gm || "trivia"; const qs = ghostQs(mode, live.round);
-      if (!myGAns || myGAns.round!==live.round) myGAns = {round: live.round, ans: []};
+      if (!myGAns || myGAns.round!==live.round){ const k = lsGet("tt-gans-"+personal.pt); myGAns = (k && k.round===live.round && Array.isArray(k.ans)) ? k : {round: live.round, ans: []}; }
       const n = myGAns.ans.length;
       h += `<div class="card" style="border-color:var(--gold)"><h3>2. Ghost game: win a shield</h3>`;
       h += mode==="match"
@@ -2941,6 +2953,7 @@ function rankCard(title, intro, cands, extra){
 }
 function suspectPanel(P){
   const me = personal.name;
+  if (!submitted && !myList.length){ const k = lsGet("tt-sus-"+personal.pt); if (k && k.round===live.round && (k.a||0)===(live.redo||0)){ myList = k.v.slice(); submitted = true; } }
   if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
   const cands = P.filter(p => p.s==="a").map(p => ({n:p.n, label: p.n===me ? p.n+" (me)" : p.n}));
   return rankCard((live.redo?"Not over yet! ":"")+"Who will be murdered?", (live.dbl?"It's a double murder night. Guess who the Traitors are murdering tonight. Rank your top 3.":"Guess who the Traitors are murdering tonight. Rank your top 3."), cands);
@@ -3097,7 +3110,7 @@ function renderSetup(){
     const code = makeCode(keys, kk);
     if (!code){ err.textContent="Couldn't pick Traitors. Tap again."; err.hidden=false; return; }
     let endMs = null; if (draft.endsAt){ const [hh,mm] = draft.endsAt.split(":").map(Number); const d = new Date(); d.setHours(hh,mm,0,0); if (d.getTime() <= Date.now()) d.setDate(d.getDate()+1); endMs = d.getTime(); }
-    S = { code, pace: draft.pace!==false, endMs, recruitOn: draft.recruit!==false, gid:"tg"+rid(18), tid:"tt"+rid(18), called:[], picks:{}, window:false, locked:false, endsAt:draft.endsAt||"", turret:false, round:1, phase:"lobby", finalSize:parseInt(draft.finalSize,10), shields:!!draft.shields, secretShields: draft.secretShields!==false,
+    S = { code, pace: draft.pace!==false, endMs, recruitOn: draft.recruit!==false, gid:"tg"+rid(18), ghtid:"tg"+rid(18), tid:"tt"+rid(18), called:[], picks:{}, window:false, locked:false, endsAt:draft.endsAt||"", turret:false, round:1, phase:"lobby", finalSize:parseInt(draft.finalSize,10), shields:!!draft.shields, secretShields: draft.secretShields!==false,
       players: names.map((n,i)=>({name:n, key:keys[i], seal:sealOf(code,keys[i]), traitor:isTraitor(code,keys[i]), status:"alive", shield:false, pt:"tp"+rid(16)})),
       votes:{}, candidates:null, revotes:0, banished:null, murder:null, endVotes:{}, log:[], winner:null };
     save(); hostListen(); render();
@@ -3126,6 +3139,7 @@ function renderHost(){
   ${announceCard()}
   <div class="card"><h3>The players</h3><div class="roster">${S.players.map(chip).join("")}</div></div>
   ${S.log.length?`<div class="card"><h3>What has happened</h3><div class="log">${S.log.map(l=>`<div>${esc(l)}</div>`).join("")}</div></div>`:""}
+  <p class="small muted" id="quota">${quotaText()}</p>
   <div class="row"><button class="ghost" id="roleChk">Check a role on this phone</button><button class="ghost" id="links">Personal links</button>${(S.phase==="mission"||S.phase==="table")&&!S._final?`<button class="ghost" id="toFinal">Time's up: go to the endgame</button>`:""}<button class="ghost" id="home">Home</button><button class="ghost" id="reset">End and reset</button></div>`;
   wireHost();
 }
@@ -3319,7 +3333,7 @@ function ghostShield(){
   if (top.length){ const mx = Math.max(...top.map(x=>x[1])); const t = top.filter(x=>x[1]===mx).map(x=>x[0]); pick = t[Math.floor(Math.random()*t.length)]; }
   if (!won) pick = null;
   if (pick){ giveShield(S.players.find(x=>x.name===pick), true); logit("The ghosts gave out a secret shield."); }
-  S.players.filter(p=>p.status!=="alive").forEach(g => publish(g.pt, {k:"gshield", round:S.round, v: pick || "", lost: !won, detail: o===undefined ? res.text : ""}));
+  if (S.players.some(p=>p.status!=="alive") && S.ghtid) publish(S.ghtid, {k:"gshield", round:S.round, v: pick || "", lost: !won, detail: o===undefined ? res.text : ""});
 }
 function openWindow(){ ghostShield(); S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
