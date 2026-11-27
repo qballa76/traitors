@@ -151,7 +151,7 @@ function subscribe(topics, onMsg, onStatus){
 let lastSent = "", pubTimer = null;
 function publicState(){
   const pl = S.players.map(p=>({n:p.name, s:p.status[0], sh:(p.shield && !S.secretShields)?1:0}));
-  return {k:"state", round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
+  return {k:"state", gp:S.ghostPts||{}, gs:!!S.shields, round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
     players:pl, over: S.phase==="over" ? {w:S.winner, t:S.players.filter(p=>p.traitor).map(p=>p.name)} : null};
 }
 function broadcast(){
@@ -163,6 +163,13 @@ let hostSub = false, relayOK = null, hostReady = false; setTimeout(()=>{ hostRea
 function hostListen(){
   if (hostSub || !S || !S.tid) return; hostSub = true;
   subscribe([S.tid].concat(S.players.map(p=>p.pt).filter(Boolean)), (topic, m) => {
+    if (S && (m.k==="gvote"||m.k==="pred"||m.k==="wpred")){
+      const p = S.players.find(x=>x.pt===topic); if (!p || p.status==="alive") return;
+      if (m.k==="gvote" && m.round===S.round){ S.gvotes = S.gvotes||{}; (S.gvotes[S.round] = S.gvotes[S.round]||{})[p.name] = m.v; }
+      if (m.k==="pred"){ S.preds = S.preds||{}; (S.preds[m.round] = S.preds[m.round]||{})[p.name] = m.v; }
+      if (m.k==="wpred"){ S.wpred = S.wpred||{}; S.wpred[p.name] = m.v; }
+      save(); return;
+    }
     if (S && m.k==="sus"){
       const p = S.players.find(x=>x.pt===topic);
       if (p && m.round===S.round && S.phase==="night" && (m.a||0)===(S.redo||0)){ S.sus = S.sus||{}; S.sus[p.name] = m.v; save(); }
@@ -248,7 +255,16 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) setT
 // ---------- state ----------
 let S = null;
 function load(){ try{ const raw = localStorage.getItem(KEY); if(raw) S = JSON.parse(raw); }catch(e){ S = null; } }
-function save(){ if (S) paceCheck(); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} broadcast(); }
+function ghostSync(){
+  if (!S.gid) return;
+  if (S.phase==="over" && !S.wAwarded){ S.wAwarded = true; S.ghostPts = S.ghostPts||{}; Object.entries(S.wpred||{}).forEach(([g,v]) => { if (v===S.winner) S.ghostPts[g] = (S.ghostPts[g]||0) + 2; }); }
+  const ghosts = S.players.filter(p=>p.status!=="alive");
+  const tr = S.players.filter(p=>p.traitor).map(p=>p.name);
+  const sig = ghosts.map(g=>g.name).join(",") + "|" + tr.join(",");
+  if (sig === S.ghostSig) return; S.ghostSig = sig;
+  ghosts.forEach(g => publish(g.pt, {k:"ghost", t: tr}));
+}
+function save(){ if (S){ paceCheck(); ghostSync(); } try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} broadcast(); }
 // ---------- auto pacing ----------
 const SHARE = {mission:.35, table:.35, night:.15, breakfast:.15};
 const DUE_LABEL = {mission:"Round table", table:"Voting", night:"Breakfast", breakfast:"Breakfast entrance"};
@@ -392,6 +408,11 @@ function renderPersonal(){
         renderPersonal(); return; }
       else if (m.k==="refused"){ answered = true; }
       else if (m.k==="shield"){ myShield = m; claimMsg = ""; }
+      else if (m.k==="ghost"){ ghostInfo = m.t; }
+      else if (m.k==="gshield"){ gShieldMsg = m; }
+      else if (m.k==="gvote"){ myGVote = {round:m.round, v:m.v}; }
+      else if (m.k==="pred"){ myPred[m.round] = m.v; }
+      else if (m.k==="wpred"){ myWPred = m.v; }
       else if (m.k==="sus" && live && m.round===live.round && (m.a||0)===(live.redo||0) && Array.isArray(m.v)){ myList = m.v.slice(); submitted = true; }
       else if (m.k==="claimno"){ if (claimPending) claimMsg = "That code didn't work, or someone already found the shield."; claimPending = false; }
       renderLive(); return;
@@ -419,8 +440,8 @@ function maybeAlert(){
   if (!alertReady || prev===null) return;
   let msg = "";
   if (live.over) msg = "The game is over. See who won!";
-  else if (mine.s==="m") msg = "You were murdered.";
-  else if (mine.s==="b") msg = "You were banished.";
+  else if (mine.s==="m") msg = "You were murdered. You're a ghost now. Open your page.";
+  else if (mine.s==="b") msg = "You were banished. You're a ghost now. Open your page.";
   else if (offerOpen) msg = "The Traitors have chosen you. Decide now.";
   else if (live.phase==="night" && live.redo) msg = "Not over yet! Open your night screen and pick again.";
   else if (traitorWin) msg = "Night has fallen. Open your night screen.";
@@ -439,11 +460,9 @@ function renderLive(){
   let html = "";
   if (live.over){
     const fw = live.over.w==="faithful";
-    html += `<div class="card" style="text-align:center"><div class="eyebrow">The game is over</div><div class="big" style="font-family:var(--display);font-size:2.4rem;color:${fw?"var(--faith)":"var(--blood)"}">${fw?"The Faithful win":"The Traitors win"}</div><p>The Traitors were <b>${live.over.t.map(esc).join(", ")}</b>.</p></div>`;
-  } else if (mine.s==="m"){
-    html += `<div class="card" style="border-color:var(--blood);text-align:center"><div class="big" style="font-family:var(--display);font-size:2.4rem;color:var(--blood)">You were murdered</div><p class="muted">Stay and enjoy the party, but you can't help anyone with the game now.</p></div>`;
-  } else if (mine.s==="b"){
-    html += `<div class="card" style="text-align:center"><div class="big" style="font-family:var(--display);font-size:2.4rem">You were banished</div><p class="muted">Stay and enjoy the party, but keep what you know to yourself.</p></div>`;
+    html += `<div class="card" style="text-align:center"><div class="eyebrow">The game is over</div><div class="big" style="font-family:var(--display);font-size:2.4rem;color:${fw?"var(--faith)":"var(--blood)"}">${fw?"The Faithful win":"The Traitors win"}</div><p>The Traitors were <b>${live.over.t.map(esc).join(", ")}</b>.</p>${bestGhostLine(live.gp||{})}</div>`;
+  } else if (mine.s==="m" || mine.s==="b"){
+    html += ghostPanel(P, mine);
   } else {
     let head = "", body = esc(live.ann||"");
     if (live.phase==="lobby") head = "The game is about to begin";
@@ -453,7 +472,7 @@ function renderLive(){
     else if (live.phase==="night") head = "Night has fallen";
     else if (live.phase==="breakfast"){ head = "Breakfast";
       body = (live.called||[]).includes(me) ? `<b style="color:var(--gold)">You've been called. Come in to breakfast.</b>` : `Wait outside the breakfast room. You'll be called in one at a time.`; }
-    const shield = (mine.sh || (myShield && myShield.round===live.round && myShield.on && live.phase!=="breakfast")) ? `<p style="color:var(--gold)">🛡 You hold a shield. You can't be murdered tonight.${live.players.some(p=>p.sh)?"":" Nobody else knows unless you tell them."}</p>` : "";
+    const shield = (mine.sh || (myShield && myShield.round===live.round && myShield.on && live.phase!=="breakfast")) ? `<p style="color:var(--gold)">🛡 ${myShield&&myShield.ghost?"The ghosts have secretly given you a shield. ":""}You hold a shield. You can't be murdered tonight.${live.players.some(p=>p.sh)?"":" Nobody else knows unless you tell them."}</p>` : "";
     html += `<div class="card"><div class="eyebrow">Round ${live.round}</div><h2>${head}</h2><p>${body}</p>${shield}</div>`;
     if (false) html += `<div class="card"><h3>Found a hidden shield?</h3><div class="row" style="flex-wrap:nowrap"><input id="claimIn" autocomplete="off" autocapitalize="characters" placeholder="Code word" value="${esc(claimDraft)}" style="flex:1;min-width:0"><button id="claimGo" style="flex:0 0 auto">Claim</button></div>${claimMsg?`<p class="err small">${esc(claimMsg)}</p>`:""}${claimPending?`<p class="muted small">Checking…</p>`:""}</div>`;
     if (!t && offer && !answered && live.phase==="night" && offer.round===live.round) html = offerPanel() + html;
@@ -461,6 +480,11 @@ function renderLive(){
     else if (!t && live.phase==="night" && !(offer && !answered && offer.round===live.round)) html += suspectPanel(P);
   }
   el.innerHTML = html;
+  const gs = $("#gShow"); if (gs) gs.onclick = () => { showTraitors = true; renderLive(); };
+  const gh = $("#gHide"); if (gh) gh.onclick = () => { showTraitors = false; renderLive(); };
+  el.querySelectorAll("[data-gv]").forEach(b => b.onclick = () => { myGVote = {round: live.round, v: b.dataset.gv}; publish(personal.pt, {k:"gvote", round: live.round, v: b.dataset.gv}); renderLive(); });
+  el.querySelectorAll("[data-pred]").forEach(b => b.onclick = () => { const r = (live.phase==="night"||live.phase==="breakfast") ? live.round+1 : live.round; myPred[r] = b.dataset.pred; publish(personal.pt, {k:"pred", round: r, v: b.dataset.pred}); renderLive(); });
+  el.querySelectorAll("[data-wp]").forEach(b => b.onclick = () => { myWPred = b.dataset.wp; publish(personal.pt, {k:"wpred", v: myWPred}); renderLive(); });
   el.querySelectorAll("[data-rank]").forEach(b => b.onclick = () => { const n = b.dataset.rank; const i = myList.indexOf(n); if (i>=0) myList.splice(i,1); else if (myList.length<3) myList.push(n); renderLive(); });
   const rc = $("#rkClear"); if (rc) rc.onclick = () => { myList = []; renderLive(); };
   const rch = $("#rkChange"); if (rch) rch.onclick = () => { submitted = false; renderLive(); };
@@ -489,6 +513,33 @@ function offerPanel(){
    <p class="muted small">If you join, you become a Traitor for the rest of the game and win with them. Tell no one.</p>
    <button class="primary wide" id="offYes">Join the Traitors</button>
    <button class="wide" id="offNo">Refuse, and be murdered</button></div>`;
+}
+let ghostInfo = null, myGVote = null, myPred = {}, myWPred = null, gShieldMsg = null, showTraitors = false;
+function ghostPanel(P, mine){
+  const how = mine.s==="m" ? "murdered" : "banished";
+  const alive = P.filter(p=>p.s==="a");
+  const predRound = (live.phase==="night"||live.phase==="breakfast") ? live.round+1 : live.round;
+  const pts = (live.gp||{})[personal.name]||0;
+  const board = Object.entries(live.gp||{}).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
+  const rules = `<div class="card" style="border-color:var(--gold)"><p style="color:var(--gold)"><b>👻 Ghost rules:</b> you know the truth now. <b>No faces, no hints, and no talking about the game</b> with anyone still playing.</p></div>`;
+  let h = `<div class="card" style="text-align:center;border-color:var(--blood)"><div class="big" style="font-family:var(--display);font-size:2.2rem;color:var(--blood)">You were ${how}</div><p>You're a ghost now. Stay in the game from here.</p></div>` + rules;
+  h += `<div class="card"><h3>1. The truth</h3>${showTraitors
+      ? `<p>The Traitors are: <b style="color:var(--blood)">${(ghostInfo||[]).map(n=>{ const st=(P.find(p=>p.n===n)||{}).s; return esc(n)+(st==="b"?" (banished)":st==="m"?" (out)":""); }).join(", ") || "loading…"}</b></p><button class="ghost" id="gHide">Hide</button>`
+      : `<p>See who the Traitors really are. Make sure nobody is looking.</p><button class="primary wide" id="gShow">Show me the Traitors</button>`}</div>`;
+  if (live.gs){
+    if (live.phase==="mission" || live.phase==="table" || live.phase==="lobby")
+      h += `<div class="card"><h3>2. Ghost shield</h3><p>The ghosts vote together to secretly protect one living player tonight. Most votes wins. Voting closes when night falls.</p>
+        <div class="victims">${alive.map(p=>`<button data-gv="${esc(p.n)}" class="${myGVote&&myGVote.round===live.round&&myGVote.v===p.n?"gold":""}">${esc(p.n)}</button>`).join("")}</div></div>`;
+    else h += `<div class="card"><h3>2. Ghost shield</h3><p>${gShieldMsg&&gShieldMsg.round===live.round ? (gShieldMsg.v ? `Tonight the ghosts are protecting <b style="color:var(--gold)">${esc(gShieldMsg.v)}</b>.` : "No ghost shield tonight.") : "Voting is closed for tonight. It opens again with the next challenge."}</p></div>`;
+  }
+  const myP = myPred[predRound];
+  h += `<div class="card"><h3>3. Ghost predictions</h3><p>Who will be banished at the ${predRound===live.round?"":"next "}round table? 1 point if you're right.</p>
+     <div class="victims">${alive.map(p=>`<button data-pred="${esc(p.n)}" class="${myP===p.n?"gold":""}">${esc(p.n)}</button>`).join("")}</div>
+     <p>Who wins the game? 2 points if you're right.</p>
+     <div class="row"><button data-wp="faithful" class="${myWPred==="faithful"?"gold":""}" style="flex:1">Faithful</button><button data-wp="traitors" class="${myWPred==="traitors"?"gold":""}" style="flex:1">Traitors</button></div>
+     <p class="small">Your points: <b>${pts}</b>${board.length?` · Ghost leaderboard: ${board.map(([n,v])=>`${esc(n)} ${v}`).join(", ")}`:""}</p></div>`;
+  h += `<div class="card"><h3>4. Want a job?</h3><p>Ask the host for a ghost job: run the shield challenges, keep score, or work the game phone for votes and the breakfast calls.</p></div>`;
+  return h;
 }
 let mySus = null, myList = [], submitted = false, lastPicks = null;
 function rankCard(title, intro, cands, extra){
@@ -674,7 +725,7 @@ function chip(p){
 }
 const WORDS = ["OWL","RAVEN","CANDLE","DAGGER","ACORN","LANTERN","CROWN","GOBLET","TURRET","CLOAK","FEATHER","GRAVY"];
 function ensureCode(){ if (S.codeRound!==S.round){ S.codeRound=S.round; S.shieldCode=WORDS[Math.floor(Math.random()*WORDS.length)]; S.codeClaimed=false; S.winners=[]; S.drawn=0; save(); } }
-function giveShield(p){ p.shield = true; publish(p.pt, {k:"shield", round:S.round, on:true}); }
+function giveShield(p, ghost){ p.shield = true; publish(p.pt, {k:"shield", round:S.round, on:true, ghost:!!ghost}); }
 function missionCard(){
   if (S.shields && S.secretShields){
     ensureCode();
@@ -800,6 +851,7 @@ function countVotes(){
 }
 function doBanish(key, fate){
   const p = byKey(key); const n = Object.values(S.votes).filter(v=>v===key).length;
+  { const pr = (S.preds||{})[S.round] || {}; S.ghostPts = S.ghostPts||{}; Object.entries(pr).forEach(([g,v]) => { if (v===p.name) S.ghostPts[g] = (S.ghostPts[g]||0) + 1; }); }
   p.status="banished"; logit(p.name+" was banished"+(fate?" by fate":" with "+n+" vote"+(n===1?"":"s"))+". They were "+(p.traitor?"a Traitor":"Faithful")+".");
   S.votes={}; S.candidates=null; S.revotes=0;
   if (p.traitor && traitorsAlive().length>0 && S.recruitOn!==false) S.recruit = true;
@@ -812,7 +864,16 @@ function checkWin(){
   if (t>=f){ S.winner="traitors"; S.phase="over"; return true; }
   return false;
 }
-function openWindow(){ S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
+function ghostShield(){
+  if (!S.shields) return;
+  const votes = (S.gvotes||{})[S.round] || {}; const c = {};
+  Object.values(votes).forEach(v => { const p = S.players.find(x=>x.name===v); if (p && p.status==="alive") c[v]=(c[v]||0)+1; });
+  const top = Object.entries(c); let pick = null;
+  if (top.length){ const mx = Math.max(...top.map(x=>x[1])); const t = top.filter(x=>x[1]===mx).map(x=>x[0]); pick = t[Math.floor(Math.random()*t.length)]; }
+  if (pick){ giveShield(S.players.find(x=>x.name===pick), true); logit("The ghosts gave out a secret shield."); }
+  S.players.filter(p=>p.status!=="alive").forEach(g => publish(g.pt, {k:"gshield", round:S.round, v: pick || ""}));
+}
+function openWindow(){ ghostShield(); S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
   publish(S.tid, {k:"mode", round:S.round, mode:S.mode, names: traitorsAlive().map(x=>x.name)}); }
 function afterBanish(){
@@ -1012,13 +1073,15 @@ function renderLobby(){
   $("#home").onclick = () => { view="home"; render(); };
   $("#reset").onclick = () => confirmBox("Start over? New Traitors will be chosen.", "Start over", () => { S=null; try{localStorage.removeItem(KEY);}catch(e){} render(); });
 }
+function bestGhostLine(gp){ const e = Object.entries(gp).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]); if (!e.length) return ""; const mx = e[0][1]; const w = e.filter(x=>x[1]===mx).map(x=>x[0]);
+  return `<p style="color:var(--gold)">👻 Best ghost: <b>${w.map(esc).join(" and ")}</b> with ${mx} point${mx===1?"":"s"}.</p>`; }
 function renderOver(){
   const fw = S.winner==="faithful";
   const tr = S.players.filter(p=>p.traitor);
   app.innerHTML = `
   <div class="hero"><div class="eyebrow">The game is over</div>
    <div class="code" style="font-size:2.4rem;color:${fw?"var(--faith)":"var(--blood)"}">${fw?"The Faithful win":"The Traitors win"}</div>
-   <p>${fw?"Every Traitor has been found. The Faithful share the prize pot.":"A Traitor survived to the end. The Traitors take the prize pot."}</p></div>
+   <p>${fw?"Every Traitor has been found. The Faithful share the prize pot.":"A Traitor survived to the end. The Traitors take the prize pot."}</p>${bestGhostLine(S.ghostPts||{})}</div>
   <div class="card"><h3>The Traitors were</h3><div class="roster">${tr.map(p=>`<div class="chip"><span>${esc(p.name)}</span><span class="tag m">${p.status==="alive"?"Survived":"Banished"}</span></div>`).join("")}</div></div>
   <div class="card"><h3>Everyone</h3><div class="roster">${S.players.map(chip).join("")}</div></div>
   ${S.log.length?`<div class="card"><h3>How it went</h3><div class="log">${S.log.map(l=>`<div>${esc(l)}</div>`).join("")}</div></div>`:""}
