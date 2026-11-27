@@ -163,6 +163,11 @@ let hostSub = false, relayOK = null, hostReady = false; setTimeout(()=>{ hostRea
 function hostListen(){
   if (hostSub || !S || !S.tid) return; hostSub = true;
   subscribe([S.tid].concat(S.players.map(p=>p.pt).filter(Boolean)), (topic, m) => {
+    if (S && m.k==="sus"){
+      const p = S.players.find(x=>x.pt===topic);
+      if (p && m.round===S.round && S.phase==="night"){ S.sus = S.sus||{}; S.sus[p.name] = m.v; save(); }
+      return;
+    }
     if (S && m.k==="claim"){
       const p = S.players.find(x=>x.pt===topic);
       if (!p || m.round!==S.round || m.done) return;
@@ -375,7 +380,7 @@ function renderPersonal(){
       renderLive(); return;
     }
     onTeam(m);
-    if (m.k==="state"){ if (!live || (m.seq||0) >= (live.seq||0)){ if (live && live.round!==m.round){ picks={}; myPick=null; lockV=null; refusedBy=null; } live = m; } }
+    if (m.k==="state"){ if (!live || (m.seq||0) >= (live.seq||0)){ if (live && live.round!==m.round){ picks={}; myPick=null; lockV=null; refusedBy=null; mySus=null; murderOpen=false; } live = m; } }
     else if (m.k==="pick" && live && m.round===live.round){ picks[m.by] = m.v; if (m.by===personal.name) myPick = m.v; }
     else if (m.k==="lock" && live && m.round===live.round){ lockV = m.v; lockMode = m.mode||"murder"; }
     renderLive();
@@ -399,9 +404,9 @@ function maybeAlert(){
   else if (mine.s==="m") msg = "You were murdered.";
   else if (mine.s==="b") msg = "You were banished.";
   else if (offerOpen) msg = "The Traitors have chosen you. Decide now.";
-  else if (traitorWin) msg = "The murder window is open. Choose your victim.";
+  else if (traitorWin) msg = "Night has fallen. Open your night screen.";
   else if (live.phase==="breakfast" && called) msg = "You've been called. Come in to breakfast!";
-  else msg = ({lobby:"The game is starting.", mission:"Shield challenge! Head to the table.", table:"Round table! Time to vote.", night:"Night has fallen.", breakfast:"Breakfast! Wait outside to be called in.", final:"The endgame! Everyone to the table."})[live.phase] || "Something happened in the game.";
+  else msg = ({lobby:"The game is starting.", mission:"Shield challenge! Head to the table.", table:"Round table! Time to vote.", night:"Night has fallen. Open your night screen.", breakfast:"Breakfast! Wait outside to be called in.", final:"The endgame! Everyone to the table."})[live.phase] || "Something happened in the game.";
   buzz(msg);
 }
 function renderLive(){
@@ -434,8 +439,10 @@ function renderLive(){
     if (false) html += `<div class="card"><h3>Found a hidden shield?</h3><div class="row" style="flex-wrap:nowrap"><input id="claimIn" autocomplete="off" autocapitalize="characters" placeholder="Code word" value="${esc(claimDraft)}" style="flex:1;min-width:0"><button id="claimGo" style="flex:0 0 auto">Claim</button></div>${claimMsg?`<p class="err small">${esc(claimMsg)}</p>`:""}${claimPending?`<p class="muted small">Checking…</p>`:""}</div>`;
     if (!t && offer && !answered && live.phase==="night" && offer.round===live.round) html = offerPanel() + html;
     if (t && live.phase==="night" && (live.win || lockV!==null)) html += murderPanel(P);
+    else if (!t && live.phase==="night" && !(offer && !answered && offer.round===live.round)) html += suspectPanel(P);
   }
   el.innerHTML = html;
+  el.querySelectorAll("[data-sus]").forEach(b => b.onclick = () => { mySus = b.dataset.sus; publish(personal.pt, {k:"sus", round: live.round, v: mySus}); renderLive(); });
   const mo = $("#mOpen"); if (mo) mo.onclick = () => { murderOpen = true; renderLive(); };
   const mh = $("#mHide"); if (mh) mh.onclick = () => { murderOpen = false; renderLive(); };
   const ci = $("#claimIn"); if (ci) ci.oninput = e => { claimDraft = e.target.value; };
@@ -457,25 +464,37 @@ function offerPanel(){
    <button class="primary wide" id="offYes">Join the Traitors</button>
    <button class="wide" id="offNo">Refuse, and be murdered</button></div>`;
 }
+let mySus = null;
+function suspectPanel(P){
+  const me = personal.name;
+  if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
+  const others = P.filter(p => p.s==="a" && p.n!==me);
+  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>Who do you suspect?</h2>
+   <p>Pick the person you think is a Traitor. Your answer is anonymous. The results are revealed at breakfast.</p>
+   <div class="victims">${others.map(v=>`<button data-sus="${esc(v.n)}" class="${mySus===v.n?"primary":""}">${esc(v.n)}</button>`).join("")}</div>
+   <button data-sus="-" class="${mySus==="-"?"primary":"ghost"}">Not sure yet</button>
+   ${mySus?`<p class="small" style="color:var(--gold)">Your answer is in. You can change it until breakfast.</p>`:""}
+   <button class="ghost" id="mHide">Hide this screen</button></div>`;
+}
 function murderPanel(P){
   const me = personal.name;
   const team = [me].concat(myFellows()).filter(n => (P.find(p=>p.n===n)||{}).s==="a");
   const recruiting = modeNow[live.round]==="recruit";
   if (lockV !== null && lockMode==="recruit" && lockV!=="-"){
     const joinedNow = teamNames && teamNames.includes(lockV);
-    return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Traitors only</div><h2>${joinedNow?"You have a new Traitor":refusedBy?"They refused":"Ultimatum sent"}</h2>
+    return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${joinedNow?"You have a new Traitor":refusedBy?"They refused":"Ultimatum sent"}</h2>
      <p>${joinedNow?`<b style="color:var(--blood)">${esc(lockV)}</b> has joined you. Nobody dies tonight.`:refusedBy?`<b style="color:var(--blood)">${esc(lockV)}</b> refused, so they will not be at breakfast.`:`Waiting for <b>${esc(lockV)}</b> to answer: join you, or be murdered.`}</p></div>`;
   }
   if (lockV !== null){
-    return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Traitors only</div><h2>${lockV==="-"?"No murder tonight":"It is done"}</h2>
+    return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${lockV==="-"?"No murder tonight":"It is done"}</h2>
      <p>${lockV==="-"?"You spared everyone tonight.":`<b style="color:var(--blood)">${esc(lockV)}</b> will not be at breakfast.`} Act natural.</p></div>`;
   }
-  if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Traitors only</div><p>The murder window is open. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open the murder screen</button></div>`;
+  if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
   const allT = team.concat(myFellows());
   const victims = P.filter(p => p.s==="a" && !allT.includes(p.n) && !p.sh);
   const shielded = P.filter(p => p.s==="a" && p.sh && !allT.includes(p.n));
   const others = team.filter(n=>n!==me);
-  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Traitors only</div><h2>${recruiting?"Recruit a new Traitor":"Choose your victim"}</h2>
+  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${recruiting?"Recruit a new Traitor":"Choose your victim"}</h2>
    ${recruiting?`<p>One of you was banished. Tonight, pick a Faithful to give an ultimatum: join you, or be murdered.</p>`:""}
    <p>${others.length?`Agree with <b style="color:var(--blood)">${others.map(esc).join(", ")}</b>. The murder happens when you all pick the same person.`:`You're the last Traitor. Your pick is final.`}</p>
    ${others.map(n=>`<p class="small">${esc(n)} picked: <b>${picks[n]===undefined?"nobody yet":picks[n]==="-"?"spare everyone":esc(picks[n])}</b></p>`).join("")}
@@ -749,7 +768,7 @@ function checkWin(){
   if (t>=f){ S.winner="traitors"; S.phase="over"; return true; }
   return false;
 }
-function openWindow(){ S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
+function openWindow(){ S.sus={}; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
   publish(S.tid, {k:"mode", round:S.round, mode:S.mode, names: traitorsAlive().map(x=>x.name)}); }
 function afterBanish(){
@@ -832,7 +851,7 @@ function announceText(){
     lobby:"Open your link and check your secret role. The game starts soon.",
     mission:"Shield challenge starting in 5 minutes! Winners get a shield that protects them from murder tonight.",
     table:"Round table in 5 minutes. Time to banish someone. Bring your suspicions."+end,
-    night:"Night has fallen. The Traitors are choosing their victim. Act natural.",
+    night:"Night has fallen. Everyone, open your night screen.",
     breakfast:"Breakfast time. Everyone wait outside the breakfast room. You'll be called in one at a time.",
     final:"Endgame. Everyone left, to the table now. Decide: end the game or banish again.",
     over:"The game is over."
@@ -882,7 +901,7 @@ function breakfast(){
   const queue = alive().filter(p => p.key!==key).map(p=>p.key);
   for (let i=queue.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [queue[i],queue[j]]=[queue[j],queue[i]]; }
   let idx = 0; S.called = []; save();
-  const next = () => { S.murder=null; S.called=[]; S.picks={}; S.window=false; S.locked=false; S.players.forEach(p=>p.shield=false); S.round++; if (checkWin()){ save(); return render(); }
+  const next = () => { S.murder=null; S.sus={}; S.called=[]; S.picks={}; S.window=false; S.locked=false; S.players.forEach(p=>p.shield=false); S.round++; if (checkWin()){ save(); return render(); }
     S.phase = alive().length<=S.finalSize ? "final" : "mission"; S.endVotes={}; save(); render(); };
   ov.hidden=false;
   ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big">Breakfast is served</div>
@@ -899,11 +918,15 @@ function breakfast(){
       <button class="gold wide" id="call" style="min-height:70px">${idx>=queue.length?"Everyone's called. Who's missing?":"Call the next guest"}</button></div>`;
     $("#call",ov).onclick = call;
   };
+  const susLine = (() => { const c = {}; Object.values(S.sus||{}).forEach(v => { if (v && v!=="-") c[v]=(c[v]||0)+1; });
+    const top = Object.entries(c).sort((a,b)=>b[1]-a[1]); if (!top.length) return "";
+    const best = top.filter(x=>x[1]===top[0][1]).map(x=>x[0]);
+    return `<p class="small" style="color:var(--gold)">Last night's suspicion poll: most suspected <b>${best.map(esc).join(" and ")}</b> (${top[0][1]} vote${top[0][1]===1?"":"s"} each).</p>`.replace(" each)", best.length>1?" each)":")"); })();
   const finale = () => {
     if (!victim){
       logit(blocked ? "The Traitors' victim was protected by a shield." : "The Traitors spared everyone.");
       say("Everyone made it through the night.");
-      ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big fade">Everyone survived</div><p class="muted">${blocked?"The Traitors struck, but their victim was protected by a shield.":"The Traitors held back last night. Why?"}</p><button class="wide" id="bc">Continue</button></div>`;
+      ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big fade">Everyone survived</div><p class="muted">${blocked?"The Traitors struck, but their victim was protected by a shield.":"The Traitors held back last night. Why?"}</p>${susLine}<button class="wide" id="bc">Continue</button></div>`;
       $("#bc",ov).onclick = () => { ov.hidden=true; next(); }; return;
     }
     say("Everyone who survived the night is here. Whoever is still outside, was murdered.");
@@ -912,7 +935,7 @@ function breakfast(){
       <button class="gold wide" id="mv">Reveal the victim</button></div>`;
     $("#mv",ov).onclick = () => {
       victim.status="murdered"; logit(victim.name+" was murdered in the night."); save();
-      $("#mr",ov).innerHTML = `<div class="big fade" style="color:var(--blood)">${esc(victim.name)}</div><p class="muted">Murdered. They were Faithful. Let them in.</p>`;
+      $("#mr",ov).innerHTML = `<div class="big fade" style="color:var(--blood)">${esc(victim.name)}</div><p class="muted">Murdered. They were Faithful. Let them in.</p>${susLine}`;
       say(victim.name + " was murdered. They were Faithful.");
       const b=$("#mv",ov); b.textContent="Continue"; b.className="wide"; b.onclick = () => { ov.hidden=true; next(); };
     };
