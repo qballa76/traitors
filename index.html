@@ -207,7 +207,7 @@ function ghostQs(mode, round){
 }
 function publicState(){
   const pl = S.players.map(p=>({n:p.name, s:p.status[0], sh:(p.shield && !S.secretShields)?1:0}));
-  return {k:"state", gp:S.ghostPts||{}, gs:!!S.shields, gw:ghostWonNow(), gm:ghostMode(), ga:Object.values((S.gans||{})[S.round]||{}).filter(a=>a.ans&&a.ans.length>=GQN).length, gc:S.players.filter(p=>p.status!=="alive").length, round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
+  return {k:"state", gp:S.ghostPts||{}, gs:!!S.shields, gw:ghostWonNow(), gm:ghostMode(), dbl: S.dbl===S.round && !S.recruit, ga:Object.values((S.gans||{})[S.round]||{}).filter(a=>a.ans&&a.ans.length>=GQN).length, gc:S.players.filter(p=>p.status!=="alive").length, round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
     players:pl, over: S.phase==="over" ? {w:S.winner, t:S.players.filter(p=>p.traitor).map(p=>p.name)} : null};
 }
 function broadcast(){
@@ -258,7 +258,8 @@ function hostListen(){
       const score = {};
       lists[0].forEach(name => { if (lists.every(l => l.includes(name))) score[name] = lists.reduce((t,l)=>t+l.indexOf(name),0); });
       const cands = Object.keys(score);
-      if (!cands.length){
+      const isDbl = S.dbl===S.round && S.mode!=="recruit" && traitorsAlive().length>0;
+      if (!cands.length || (isDbl && cands.length<2)){
         const last = Object.assign({}, S.picks);
         S.redo = (S.redo||0) + 1; S.picks = {}; S.sus = {};
         publish(S.tid, {k:"redo", round:S.round, a:S.redo, last});
@@ -270,14 +271,16 @@ function hostListen(){
       const bw = Math.min(...tops.map(worst)); tops = tops.filter(c=>worst(c)===bw);
       const chosen = tops[Math.floor(Math.random()*tops.length)];
       const vals = [chosen];
+      if (isDbl){ const rest = cands.filter(c=>c!==chosen); const b2 = Math.min(...rest.map(c=>score[c])); let t2 = rest.filter(c=>score[c]===b2); const w2 = Math.min(...t2.map(worst)); t2 = t2.filter(c=>worst(c)===w2); vals.push(t2[Math.floor(Math.random()*t2.length)]); }
       const vic = S.players.find(p=>p.name===chosen);
       if (S.mode==="recruit" && vic){
         S.offer = {key: vic.key, round: S.round};
         publish(S.tid, {k:"lock", round:S.round, v: vals[0], mode:"recruit"});
         publish(vic.pt, {k:"offer", round:S.round, tid:S.tid});
       } else {
-        S.murder = vic ? vic.key : null; S.locked = true; if (hostReady) buzz("The Traitors have chosen.");
-        publish(S.tid, {k:"lock", round:S.round, v: vals[0]});
+        S.murder = vic ? vic.key : null; const v2 = vals[1] ? S.players.find(p=>p.name===vals[1]) : null; S.murder2 = v2 ? v2.key : null;
+        S.locked = true; if (hostReady) buzz("The Traitors have chosen.");
+        publish(S.tid, {k:"lock", round:S.round, v: vals.join(" and ")});
       }
     }
     save(); if (view==="host" && ov.hidden) render();
@@ -334,12 +337,17 @@ function paceCheck(){
     const roundsLeft = Math.max(1, Math.ceil((alive().length - S.finalSize)/2));
     let per = 25*60000;
     if (S.endMs) per = (S.endMs - 10*60000 - now) / roundsLeft;
+    if (S.phase==="mission" && S.endMs && per < 15*60000 && !S.recruit && S.dbl!==S.round && S.dblOff!==S.round && alive().length - S.finalSize >= 4){
+      S.dbl = S.round; S.dblBuzz = true; logit("Round "+S.round+": running behind, so tonight is a double murder.");
+      per = (S.endMs - 10*60000 - now) / (1 + Math.ceil(Math.max(0, alive().length - 3 - S.finalSize)/2));
+    }
     S.perRound = Math.max(8*60000, Math.min(60*60000, per));
   }
   S.dueAt = now + Math.round(S.perRound * SHARE[S.phase]);
 }
 function paceTick(){
   if (S && S.pace && view==="host" && S.endMs && !S.endWarned && Date.now() > S.endMs - 12*60000 && (S.phase==="mission"||S.phase==="table")){ S.endWarned = true; save(); buzz("Time's nearly up. Finish this round table, then tap \"Time's up: go to the endgame\"."); }
+  if (S && view==="host" && S.dblBuzz){ S.dblBuzz = false; save(); buzz("Running behind schedule. Tonight is a DOUBLE MURDER. Everyone's page shows it."); render(); }
   if (!S || !S.pace || !S.dueAt || S.dueFired || view!=="host") return;
   const el = $("#paceLeft"); if (el) el.textContent = leftText();
   if (Date.now() < S.dueAt) return;
@@ -492,7 +500,7 @@ function maybeAlert(){
   const called = (live.called||[]).includes(me);
   const offerOpen = !!(offer && !answered && offer.round===live.round && live.phase==="night");
   const traitorWin = !!(t && live.phase==="night" && live.win);
-  const key = [live.round, live.phase, live.redo||0, called, mine.s, offerOpen, traitorWin, !!live.over].join("|");
+  const key = [live.round, live.phase, live.redo||0, called, mine.s, offerOpen, traitorWin, !!live.over, !!live.dbl].join("|");
   if (key === alertKey) return;
   const prev = alertKey; alertKey = key;
   if (!alertReady || prev===null) return;
@@ -501,6 +509,7 @@ function maybeAlert(){
   else if (mine.s==="m") msg = "You were murdered. You're a ghost now. Open your page.";
   else if (mine.s==="b") msg = "You were banished. You're a ghost now. Open your page.";
   else if (offerOpen) msg = "The Traitors have chosen you. Decide now.";
+  else if (live.dbl && prev.split("|").slice(0,2).join("|")===key.split("|").slice(0,2).join("|") && prev.split("|")[8]==="false") msg = "Double murder tonight! Check your page.";
   else if (live.phase==="night" && live.redo) msg = "Not over yet! Open your night screen and pick again.";
   else if (traitorWin) msg = "Night has fallen. Open your night screen.";
   else if (live.phase==="breakfast" && called) msg = "You've been called. Come in to breakfast!";
@@ -532,6 +541,7 @@ function renderLive(){
       body = (live.called||[]).includes(me) ? `<b style="color:var(--gold)">You've been called. Come in to breakfast.</b>` : `Wait outside the breakfast room. You'll be called in one at a time.`; }
     const shield = (mine.sh || (myShield && myShield.round===live.round && myShield.on && live.phase!=="breakfast")) ? `<p style="color:var(--gold)">🛡 ${myShield&&myShield.ghost?"The ghosts have secretly given you a shield. ":""}You hold a shield. You can't be murdered tonight.${live.players.some(p=>p.sh)?"":" Nobody else knows unless you tell them."}</p>` : "";
     html += `<div class="card"><div class="eyebrow">Round ${live.round}</div><h2>${head}</h2><p>${body}</p>${shield}</div>`;
+    if (live.dbl && ["mission","table","night"].includes(live.phase)) html += `<div class="card" style="border-color:var(--blood)"><p>🔪 <b style="color:var(--blood)">Double murder tonight.</b> The game is running behind, so the Traitors will murder two people tonight. Two people will be left outside at breakfast.</p></div>`;
     if (false) html += `<div class="card"><h3>Found a hidden shield?</h3><div class="row" style="flex-wrap:nowrap"><input id="claimIn" autocomplete="off" autocapitalize="characters" placeholder="Code word" value="${esc(claimDraft)}" style="flex:1;min-width:0"><button id="claimGo" style="flex:0 0 auto">Claim</button></div>${claimMsg?`<p class="err small">${esc(claimMsg)}</p>`:""}${claimPending?`<p class="muted small">Checking…</p>`:""}</div>`;
     if (!t && offer && !answered && live.phase==="night" && offer.round===live.round) html = offerPanel() + html;
     if (t && live.phase==="night" && (live.win || lockV!==null)) html += murderPanel(P);
@@ -642,7 +652,7 @@ function suspectPanel(P){
   const me = personal.name;
   if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
   const cands = P.filter(p => p.s==="a").map(p => ({n:p.n, label: p.n===me ? p.n+" (me)" : p.n}));
-  return rankCard((live.redo?"Not over yet! ":"")+"Who will be murdered?", "Guess who the Traitors are murdering tonight. Anyone with the victim in their top 3 is named at breakfast.", cands);
+  return rankCard((live.redo?"Not over yet! ":"")+"Who will be murdered?", (live.dbl?"It's a double murder night. Guess who the Traitors are murdering tonight. Rank your top 3.":"Guess who the Traitors are murdering tonight. Rank your top 3."), cands);
   const others = [];
   return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>Who will be murdered?</h2>
    <p>Guess who the Traitors are murdering tonight. Everyone who guesses right is named at breakfast.</p>
@@ -672,7 +682,9 @@ function murderPanel(P){
   const extra = (recruiting?`<p>One of you was banished. Your top pick gets an ultimatum: join you, or be murdered.</p>`:"")
     + (others.length ? others.map(n=>`<p class="small">${esc(n)}: ${picks[n]?picks[n].map((x,i)=>`<b>${i+1}.</b> ${esc(x)}`).join("&nbsp; "):"hasn't submitted yet"}</p>`).join("") : "")
     + (lastPicks ? `<p class="small" style="color:var(--gold)">Your lists didn't match last time. Last time: ${Object.entries(lastPicks).map(([n,l])=>`${esc(n)}: ${l.map(esc).join(", ")}`).join(" · ")}</p>` : "");
-  const intro = others.length ? `Rank your top 3. When everyone has submitted, the best-ranked name on all your lists is chosen. No match means you pick again.` : `You're the last Traitor. Your 1st pick is final.`;
+  const intro = live.dbl
+    ? (others.length ? `<b style="color:var(--blood)">Double murder tonight.</b> Rank your top 3. The two best-ranked names that appear on all your lists are both murdered. If fewer than two match, you pick again.` : `<b style="color:var(--blood)">Double murder tonight.</b> You're the last Traitor. Your 1st and 2nd picks are both murdered.`)
+    : (others.length ? `Rank your top 3. When everyone has submitted, the best-ranked name on all your lists is chosen. No match means you pick again.` : `You're the last Traitor. Your 1st pick is final.`);
   return rankCard((live.redo?"Not over yet! ":"")+(recruiting?"Recruit a new Traitor":"Choose your victim"), intro, victims.map(v=>({n:v.n})), extra);
   return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${recruiting?"Recruit a new Traitor":"Choose your victim"}</h2>
    ${recruiting?`<p>One of you was banished. Tonight, pick a Faithful to give an ultimatum: join you, or be murdered.</p>`:""}
@@ -783,7 +795,7 @@ function renderHost(){
   if (S.phase==="over") return renderOver();
   const ph = S.phase==="final" ? "table" : S.phase;
   let body = "";
-  if (S.phase==="mission") body = ghostChallengeCard() + missionCard();
+  if (S.phase==="mission") body = dblCard() + ghostChallengeCard() + missionCard();
   else if (S.phase==="table") body = tableCard();
   else if (S.phase==="final") body = finalCard();
   else if (S.phase==="night") body = nightCard();
@@ -821,6 +833,11 @@ function ghostChallengeCard(){
     <p class="small">${done} of ${ghosts.length} ghost${ghosts.length===1?"":"s"} finished. ${o===undefined?(res.won?"✅ They're winning right now.":"Not won yet."):""}</p>
     <p class="small muted">Override if a phone isn't working:</p>
     <div class="row"><button data-gw="1" class="${o===true?"gold":""}" style="flex:1">Ghosts won</button><button data-gw="0" class="${o===false?"gold":""}" style="flex:1">Ghosts lost</button>${o!==undefined?`<button data-gw="x" style="flex:1">Auto</button>`:""}</div></div>`;
+}
+function dblCard(){
+  if (S.recruit || alive().length - S.finalSize < 3) return "";
+  const on = S.dbl===S.round;
+  return `<div class="card"${on?' style="border-color:var(--blood)"':""}><p>${on?"🔪 <b>Double murder tonight.</b> The game is running behind, so the Traitors murder two people tonight.":"Running behind? Make tonight a double murder to catch up a round."}</p><button class="wide" id="dblT">${on?"Cancel the double murder":"Make tonight a double murder"}</button></div>`;
 }
 function missionCard(){
   if (S.shields && S.secretShields){
@@ -893,6 +910,7 @@ function wireHost(){
   $("#links").onclick = linksBox;
   app.querySelectorAll("[data-shield]").forEach(b => b.onclick = () => { const p=byKey(b.dataset.shield); p.shield=!p.shield; if (S.secretShields) publish(p.pt, {k:"shield", round:S.round, on:p.shield}); save(); render(); });
   app.querySelectorAll("[data-win]").forEach(b => b.onclick = () => { const k=b.dataset.win; S.winners = (S.winners||[]); S.winners = S.winners.includes(k) ? S.winners.filter(x=>x!==k) : S.winners.concat(k); save(); render(); });
+  const dt = $("#dblT"); if (dt) dt.onclick = () => { if (S.dbl===S.round){ S.dbl = null; S.dblOff = S.round; } else S.dbl = S.round; save(); render(); };
   app.querySelectorAll("[data-gw]").forEach(b => b.onclick = () => { S.ghostWon = S.ghostWon||{}; if (b.dataset.gw==="x") delete S.ghostWon[S.round]; else S.ghostWon[S.round] = b.dataset.gw==="1"; save(); render(); });
   const dr = $("#draw"); if (dr) dr.onclick = () => { const pool = (S.winners||[]).map(byKey).filter(p=>p.status==="alive"); if(!pool.length) return; giveShield(pool[Math.floor(Math.random()*pool.length)]); S.drawn=(S.drawn||0)+1; S.winners=[]; save(); render(); };
   const di = $("#direct"); if (di) di.onclick = () => {
@@ -1114,13 +1132,13 @@ function runNightPick(){ // back to picking without re-narration
   $("#spare",ov).onclick = () => confirmKill(null);
 }
 function breakfast(){
-  let key = S.murder; let blocked = false;
-  if (key && byKey(key).shield){ blocked = true; key = null; }
-  const victim = key ? byKey(key) : null;
-  const queue = alive().filter(p => p.key!==key).map(p=>p.key);
+  let blocked = false;
+  const vics = [S.murder, S.murder2].filter(Boolean).filter((k,i,a)=>a.indexOf(k)===i).map(byKey).filter(p => { if (p.shield){ blocked = true; return false; } return p.status==="alive"; });
+  const victim = vics[0] || null;
+  const queue = alive().filter(p => !vics.includes(p)).map(p=>p.key);
   for (let i=queue.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [queue[i],queue[j]]=[queue[j],queue[i]]; }
   let idx = 0; S.called = []; save();
-  const next = () => { S.murder=null; S.sus={}; S.called=[]; S.picks={}; S.window=false; S.locked=false; S.players.forEach(p=>p.shield=false); S.round++; if (checkWin()){ save(); return render(); }
+  const next = () => { S.murder=null; S.murder2=null; S.sus={}; S.called=[]; S.picks={}; S.window=false; S.locked=false; S.players.forEach(p=>p.shield=false); S.round++; if (checkWin()){ save(); return render(); }
     S.phase = alive().length<=S.finalSize ? "final" : "mission"; S.endVotes={}; save(); render(); };
   ov.hidden=false;
   ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big">Breakfast is served</div>
@@ -1132,7 +1150,7 @@ function breakfast(){
     const p = byKey(queue[idx++]);
     S.called = (S.called||[]).concat(p.name); save();
     say(p.name + ". Come in to breakfast.");
-    ov.innerHTML = `<div class="inner"><div class="eyebrow">Guest ${idx} of ${queue.length + (victim?1:0)}</div>
+    ov.innerHTML = `<div class="inner"><div class="eyebrow">Guest ${idx} of ${queue.length + vics.length}</div>
       <div class="big fade">${esc(p.name)}</div><p class="muted">Come in to breakfast.</p>
       <button class="gold wide" id="call" style="min-height:70px">${idx>=queue.length?"Everyone's called. Who's missing?":"Call the next guest"}</button></div>`;
     $("#call",ov).onclick = call;
@@ -1145,17 +1163,19 @@ function breakfast(){
     if (!victim){
       logit(blocked ? "The Traitors' victim was protected by a shield." : "The Traitors spared everyone.");
       say("Everyone made it through the night.");
-      ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big fade">Everyone survived</div><p class="muted">${blocked?"The Traitors struck, but their victim was protected by a shield.":"The Traitors held back last night. Why?"}</p>${susLine}<button class="wide" id="bc">Continue</button></div>`;
+      ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><div class="big fade">Everyone survived</div><p class="muted">${blocked?(S.murder2?"The Traitors struck twice, but both victims were protected by shields.":"The Traitors struck, but their victim was protected by a shield."):"The Traitors held back last night. Why?"}</p>${susLine}<button class="wide" id="bc">Continue</button></div>`;
       $("#bc",ov).onclick = () => { ov.hidden=true; next(); }; return;
     }
     say("Everyone who survived the night is here. Whoever is still outside, was murdered.");
+    const many = vics.length>1; const saved = blocked ? `<p class="small" style="color:var(--gold)">🛡 One of the Traitors' victims was protected by a shield.</p>` : "";
     ov.innerHTML = `<div class="inner"><div class="eyebrow">Breakfast</div><h2>Everyone who survived is here</h2>
       <p class="muted">Whoever is still outside was murdered by the Traitors.</p><div id="mr" style="min-height:120px"></div>
-      <button class="gold wide" id="mv">Reveal the victim</button></div>`;
+      <button class="gold wide" id="mv">Reveal the ${many?"victims":"victim"}</button></div>`;
     $("#mv",ov).onclick = () => {
-      victim.status="murdered"; logit(victim.name+" was murdered in the night."); save();
-      $("#mr",ov).innerHTML = `<div class="big fade" style="color:var(--blood)">${esc(victim.name)}</div><p class="muted">Murdered. They were Faithful. Let them in.</p>${susLine}`;
-      say(victim.name + " was murdered. They were Faithful.");
+      vics.forEach(v => { v.status="murdered"; logit(v.name+" was murdered in the night."); }); save();
+      const names = vics.map(v=>v.name).join(" and ");
+      $("#mr",ov).innerHTML = `<div class="big fade" style="color:var(--blood)">${esc(names)}</div><p class="muted">Murdered. ${many?"They were both Faithful. Let them in.":"They were Faithful. Let them in."}</p>${saved}${susLine}`;
+      say(names + (many?" were murdered. They were both Faithful.":" was murdered. They were Faithful."));
       const b=$("#mv",ov); b.textContent="Continue"; b.className="wide"; b.onclick = () => { ov.hidden=true; next(); };
     };
   };
