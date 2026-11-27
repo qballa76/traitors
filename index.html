@@ -2643,6 +2643,7 @@ function paceTick(){
   if (!S || !S.pace || !S.dueAt || S.dueFired || view!=="host") return;
   const el = $("#paceLeft"); if (el) el.textContent = leftText();
   if (Date.now() < S.dueAt) return;
+  if (S.phase==="mission" && cg){ S.dueAt = Date.now() + 60000; return; }
   S.dueFired = true;
   if (S.phase==="mission"){ S.phase="table"; S.votes={}; S.candidates=null; S.revotes=0; save(); buzz("Round table time. Gather everyone at the table."); return render(); }
   if (S.phase==="table"){ save(); buzz("Time to vote. Go around the table and enter the votes."); return render(); }
@@ -2654,6 +2655,122 @@ function paceTick(){
 }
 function leftText(){ const m = Math.round((S.dueAt - Date.now())/60000); return m<=0 ? "now" : "in "+m+" min"; }
 setInterval(() => { try{ paceTick(); }catch(e){} }, 10000);
+// ---------- tablet challenge games ----------
+const CG_TRIVIA = [
+["The 1621 harvest feast took place in what is now which US state?","Massachusetts"],
+["In what year was the first Macy's Thanksgiving Day Parade? Closest team wins.","1924"],
+["What do you call the bone two people pull apart for a wish?","The wishbone (furcula)"],
+["Which US president was the first to 'pardon' a turkey officially?","George H. W. Bush, in 1989"],
+["About how fast can a wild turkey run?","About 20 to 25 mph"],
+["What color are a turkey's eggs?","Tan or cream with brown speckles"],
+["What is the name of the Charlie Brown Thanksgiving special?","A Charlie Brown Thanksgiving"],
+["Which vegetable is a jack-o'-lantern made from?","A pumpkin"],
+["What sweet topping goes on candied yams?","Marshmallows"],
+["What is the main ingredient in pumpkin pie besides pumpkin?","Eggs and evaporated milk (either counts)"],
+["How many time zones does the continental US have?","4"],
+["What is the largest US state by population?","California"],
+["What color is a giraffe's tongue?","Dark blue-purple"],
+["How many keys are on a standard piano?","88"],
+["Which planet has the most moons we know of?","Saturn"],
+["What is a group of crows called?","A murder (fitting tonight)"],
+["Which NFL team hosts a game in Dallas every Thanksgiving?","The Dallas Cowboys"],
+["In what decade did the first iPhone come out?","The 2000s (2007)"],
+["What is the tallest building in the world?","Burj Khalifa in Dubai"],
+["How many bones are in the adult human body?","206"],
+["What fruit is on top of a classic sundae?","A cherry"],
+["Which fast-food chain has golden arches?","McDonald's"],
+["What is Mickey Mouse's dog's name?","Pluto"],
+["How many players are on a basketball court for one team?","5"],
+["What's the name of the snowman in Frozen?","Olaf"],
+["Which country gave the US the Statue of Liberty?","France"],
+["How many cups are in a gallon?","16"],
+["What's the only food that never spoils, found in Egyptian tombs?","Honey"],
+["Which ocean is between America and Europe?","The Atlantic"],
+["What sport is played at Wimbledon?","Tennis"],
+];
+const CG_WORDS = ["Turkey","Pilgrim","Food coma","Parade float","Pumpkin pie","Carving the turkey","Black Friday shopping","Football","Leftovers","Gravy boat","Mashed potatoes","Cranberry sauce","Wishbone","Napping on the couch","Grandma","Setting the table","Washing dishes","Corn on the cob","Scarecrow","Raking leaves","Hayride","Apple picking","Pie eating contest","Stretchy pants","Saying grace","Kids' table","Burnt rolls","Oven mitt","Traitor","Secret shield","Banished","Murder at breakfast","Detective","Superhero","Taking a selfie","Riding a horse","Brushing teeth","Fishing","Surfing","Baby crying","Elevator","Roller coaster","Snowball fight","Juggling","Zombie","Ballet dancer","Magician","Changing a tire","Mowing the lawn","Lost car keys"];
+const CG_SONGS = ["Happy Birthday","Jingle Bells","Twinkle Twinkle Little Star","Old MacDonald Had a Farm","The Wheels on the Bus","Baby Shark","Take Me Out to the Ball Game","The Star-Spangled Banner","Rudolph the Red-Nosed Reindeer","Hakuna Matata","Under the Sea","Let It Go","You've Got a Friend in Me","Sweet Caroline","Bohemian Rhapsody","We Will Rock You","We Are the Champions","Don't Stop Believin'","Livin' on a Prayer","Billie Jean","Thriller","YMCA","Macarena","Cotton Eye Joe","Ice Ice Baby","Uptown Funk","Shake It Off","Happy","Old Town Road","Dancing Queen","Hey Jude","Respect","Sweet Home Alabama","Friends in Low Places","Take Me Home, Country Roads","Single Ladies","I Want It That Way","Wannabe","Party in the U.S.A.","Hot Cross Buns"];
+let cg = null, cgTick = null;
+function cgShuffle(a){ a = a.slice(); for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function cgTeams(){ const p = cgShuffle(alive()); const h = Math.ceil(p.length/2); return [p.slice(0,h).map(x=>x.key), p.slice(h).map(x=>x.key)]; }
+function cgLauncher(){
+  if (!S.shields || !S.secretShields) return "";
+  return `<div class="card"><h3>🎲 Play the challenge on this tablet</h3><p class="muted small">Pick a game. The winners go straight into the lucky draw below.</p>
+    <div class="victims"><button data-cg="trivia">Team trivia</button><button data-cg="charades">Charades</button><button data-cg="draw">Pictionary</button><button data-cg="hum">Hum that tune</button><button data-cg="watch">Stopwatch race</button></div></div>`;
+}
+function cgStart(kind){
+  const used = (S.cgUsed = S.cgUsed || {});
+  const deck = kind==="trivia" ? CG_TRIVIA.map((q,i)=>i) : (kind==="hum" ? CG_SONGS : CG_WORDS).map((w,i)=>i);
+  const seen = used[kind==="draw"?"charades":kind] || [];
+  let order = cgShuffle(deck.filter(i=>!seen.includes(i))); if (order.length < 8) order = cgShuffle(deck);
+  cg = {kind, teams: cgTeams(), score:[0,0], turn:0, order, idx:0, shown:false, endAt:null, turns:0, maxTurns:4, times:{}, run:null, topN:2};
+  if (kind==="trivia") cg.maxQ = 8;
+  ov.hidden = false; cgRender();
+}
+function cgUse(i){ const k = cg.kind==="draw"?"charades":cg.kind; S.cgUsed = S.cgUsed||{}; (S.cgUsed[k] = S.cgUsed[k]||[]).push(i); }
+function cgNames(keys){ return keys.map(k=>esc(byKey(k).name)).join(", "); }
+function cgFinish(keys){
+  clearInterval(cgTick); cgTick = null;
+  S.winners = keys.slice(); cg = null; save();
+  ov.innerHTML = `<div class="inner"><div class="big">Winners are in the draw</div><p>${cgNames(keys)}</p><p class="muted">Close this, then tap <b>Secretly give one winner a shield</b>.</p><button class="primary wide" id="cgClose">Back to the challenge screen</button></div>`;
+  $("#cgClose",ov).onclick = () => { ov.hidden = true; render(); };
+}
+function cgTeamCard(){
+  return `<div class="row" style="gap:8px;align-items:stretch">${[0,1].map(t=>`<div class="card" style="flex:1;margin:0;${cg.turn===t&&cg.kind!=="trivia"?"border-color:var(--gold)":""}"><div class="eyebrow">Team ${t+1}</div><div class="big">${cg.score[t]}</div><p class="small">${cgNames(cg.teams[t])}</p></div>`).join("")}</div>`;
+}
+function cgRender(){
+  if (!cg) return;
+  const quit = `<button class="wide ghost" id="cgQuit">Quit the game</button>`;
+  if (cg.kind==="watch"){
+    const ranked = Object.entries(cg.times).sort((a,b)=>a[1]-b[1]);
+    const run = cg.run ? `<div class="big" id="cgT">0.0</div><p>${esc(byKey(cg.run.key).name)} is going…</p><button class="gold wide" id="cgStop" style="min-height:80px">Stop</button>` : "";
+    ov.innerHTML = `<div class="inner" style="text-align:left"><h2 style="text-align:center">Stopwatch race</h2>
+      <p class="muted small">For hot or cold, cup stacking or any race. Tap a name to start their clock, then Stop when they finish.</p>${run}
+      ${cg.run?"":`<div class="victims">${alive().map(p=>`<button data-cw="${esc(p.key)}">${esc(p.name)}${cg.times[p.key]?` · ${(cg.times[p.key]/1000).toFixed(1)}s`:""}</button>`).join("")}</div>`}
+      ${ranked.length?`<p><b>Fastest:</b> ${ranked.map(([k,t],i)=>`${i+1}. ${esc(byKey(k).name)} ${(t/1000).toFixed(1)}s`).join(" · ")}</p>`:""}
+      ${!cg.run&&ranked.length?`<div class="row"><span>Winners:</span>${[1,2,3].map(n=>`<button data-ctop="${n}" class="${cg.topN===n?"gold":""}">Top ${n}</button>`).join("")}</div>
+      <button class="primary wide" id="cgDone">Put the fastest ${Math.min(cg.topN,ranked.length)} in the draw</button>`:""}${cg.run?"":quit}</div>`;
+    ov.querySelectorAll("[data-cw]").forEach(b => b.onclick = () => { cg.run = {key:b.dataset.cw, t0:Date.now()}; cgRender(); });
+    ov.querySelectorAll("[data-ctop]").forEach(b => b.onclick = () => { cg.topN = +b.dataset.ctop; cgRender(); });
+    const st = $("#cgStop",ov); if (st) st.onclick = () => { cg.times[cg.run.key] = Date.now()-cg.run.t0; cg.run = null; cgRender(); };
+    const dn = $("#cgDone",ov); if (dn) dn.onclick = () => cgFinish(ranked.slice(0,cg.topN).map(x=>x[0]));
+  } else if (cg.kind==="trivia"){
+    const qi = cg.order[cg.idx]; const q = CG_TRIVIA[qi]; const over = cg.idx >= cg.maxQ || !q;
+    ov.innerHTML = `<div class="inner" style="text-align:left"><h2 style="text-align:center">Team trivia</h2>${cgTeamCard()}
+      ${over ? cgEndHtml() : `<p class="muted small">Question ${cg.idx+1} of ${cg.maxQ}. Read it out. Teams shout or write their answer.</p><p style="font-size:1.3rem"><b>${esc(q[0])}</b></p>
+      ${cg.shown?`<p style="color:var(--gold)">Answer: <b>${esc(q[1])}</b></p><div class="row"><button class="primary" data-cpt="0" style="flex:1">Team 1 got it</button><button class="primary" data-cpt="1" style="flex:1">Team 2 got it</button></div><button class="wide" data-cpt="-1">Nobody / both</button>`:`<button class="gold wide" id="cgShow">Show the answer</button>`}`}
+      ${quit}</div>`;
+    const sh = $("#cgShow",ov); if (sh) sh.onclick = () => { cg.shown = true; cgRender(); };
+    ov.querySelectorAll("[data-cpt]").forEach(b => b.onclick = () => { const t=+b.dataset.cpt; if (t>=0) cg.score[t]++; cgUse(qi); cg.idx++; cg.shown=false; cgRender(); });
+  } else {
+    const deck = cg.kind==="hum" ? CG_SONGS : CG_WORDS;
+    const label = {charades:"Charades", draw:"Pictionary", hum:"Hum that tune"}[cg.kind];
+    const how = {charades:"act it out, no talking", draw:"draw it, no letters or numbers", hum:"hum it, no words"}[cg.kind];
+    const over = cg.turns >= cg.maxTurns;
+    const wi = cg.order[cg.idx % cg.order.length];
+    let body;
+    if (over) body = cgEndHtml();
+    else if (!cg.endAt) body = `<p>Team ${cg.turn+1}: pick one player to ${how}. Only they look at the tablet. Their team has 60 seconds to guess as many as they can.</p><button class="gold wide" id="cgGo" style="min-height:70px">Start 60 seconds</button>`;
+    else body = `<div class="big" id="cgT">${Math.max(0,Math.ceil((cg.endAt-Date.now())/1000))}</div>${cg.shown?`<p style="font-size:1.8rem;text-align:center"><b>${esc(deck[wi])}</b></p>`:`<button class="wide" id="cgPeek">Show the word (actor only)</button>`}
+      <div class="row"><button class="primary" id="cgGot" style="flex:1;min-height:64px">Got it ✓</button><button class="wide" id="cgSkip" style="flex:1;min-height:64px">Skip</button></div>`;
+    ov.innerHTML = `<div class="inner" style="text-align:left"><h2 style="text-align:center">${label}</h2>${cgTeamCard()}<p class="muted small">Turn ${Math.min(cg.turns+1,cg.maxTurns)} of ${cg.maxTurns}</p>${body}${cg.endAt?"":quit}</div>`;
+    const go = $("#cgGo",ov); if (go) go.onclick = () => { cg.endAt = Date.now()+60000; cg.shown = false; cgRender();
+      clearInterval(cgTick); cgTick = setInterval(() => { if (!cg || !cg.endAt) return; const left = Math.ceil((cg.endAt-Date.now())/1000); const t=$("#cgT",ov); if (t) t.textContent = Math.max(0,left);
+        if (left<=0){ clearInterval(cgTick); cgTick=null; try{ navigator.vibrate&&navigator.vibrate([400,150,400]); chime(); }catch(e){} cg.endAt=null; cg.turns++; cg.turn = 1-cg.turn; cg.idx++; cgRender(); } }, 250); };
+    const pk = $("#cgPeek",ov); if (pk) pk.onclick = () => { cg.shown = true; cgRender(); };
+    const gt = $("#cgGot",ov); if (gt) gt.onclick = () => { cg.score[cg.turn]++; cgUse(wi); cg.idx++; cg.shown = true; cgRender(); };
+    const sk = $("#cgSkip",ov); if (sk) sk.onclick = () => { cg.idx++; cg.shown = true; cgRender(); };
+  }
+  const end = $("#cgEnd",ov); if (end) end.onclick = () => { const w = cg.score[0]===cg.score[1] ? cg.teams[0].concat(cg.teams[1]) : cg.teams[cg.score[0]>cg.score[1]?0:1]; cgFinish(w); };
+  const more = $("#cgMore",ov); if (more) more.onclick = () => { if (cg.kind==="trivia") cg.maxQ += 2; else cg.maxTurns += 2; cgRender(); };
+  const q = $("#cgQuit",ov); if (q) q.onclick = () => { clearInterval(cgTick); cgTick=null; cg = null; ov.hidden = true; render(); };
+}
+function cgEndHtml(){
+  const tie = cg.score[0]===cg.score[1]; const w = cg.score[0]>cg.score[1]?0:1;
+  return `<p style="font-size:1.2rem"><b>${tie?"It's a tie! Both teams go into the draw.":`Team ${w+1} wins!`}</b></p>
+    <button class="primary wide" id="cgEnd">Put ${tie?"everyone":`Team ${w+1}`} in the lucky draw</button><button class="wide" id="cgMore">Play two more ${cg.kind==="trivia"?"questions":"turns"}</button>`;
+}
+
 let quota = null;
 function quotaText(){ if (!quota) return ""; const left = quota.left; return left < 60 ? `<b style="color:var(--blood)">⚠ Only ${left} live messages left today on this wifi.</b> Ask guests to switch their phones to mobile data.` : `Live messages left today: ${left} of ${quota.max}`; }
 function checkQuota(){ if (view!=="host" || !S) return;
@@ -3124,7 +3241,7 @@ function renderHost(){
   if (S.phase==="over") return renderOver();
   const ph = S.phase==="final" ? "table" : S.phase;
   let body = "";
-  if (S.phase==="mission") body = dblCard() + ghostChallengeCard() + missionCard();
+  if (S.phase==="mission") body = dblCard() + cgLauncher() + ghostChallengeCard() + missionCard();
   else if (S.phase==="table") body = tableCard();
   else if (S.phase==="final") body = finalCard();
   else if (S.phase==="night") body = nightCard();
@@ -3240,6 +3357,7 @@ function wireHost(){
   $("#links").onclick = linksBox;
   app.querySelectorAll("[data-shield]").forEach(b => b.onclick = () => { const p=byKey(b.dataset.shield); p.shield=!p.shield; if (S.secretShields) publish(p.pt, {k:"shield", round:S.round, on:p.shield}); save(); render(); });
   app.querySelectorAll("[data-win]").forEach(b => b.onclick = () => { const k=b.dataset.win; S.winners = (S.winners||[]); S.winners = S.winners.includes(k) ? S.winners.filter(x=>x!==k) : S.winners.concat(k); save(); render(); });
+  app.querySelectorAll("[data-cg]").forEach(b => b.onclick = () => cgStart(b.dataset.cg));
   const dt = $("#dblT"); if (dt) dt.onclick = () => { if (S.dbl===S.round){ S.dbl = null; S.dblOff = S.round; } else S.dbl = S.round; save(); render(); };
   app.querySelectorAll("[data-gw]").forEach(b => b.onclick = () => { S.ghostWon = S.ghostWon||{}; if (b.dataset.gw==="x") delete S.ghostWon[S.round]; else S.ghostWon[S.round] = b.dataset.gw==="1"; save(); render(); });
   const dr = $("#draw"); if (dr) dr.onclick = () => { const pool = (S.winners||[]).map(byKey).filter(p=>p.status==="alive"); if(!pool.length) return; giveShield(pool[Math.floor(Math.random()*pool.length)]); S.drawn=(S.drawn||0)+1; S.winners=[]; save(); render(); };
