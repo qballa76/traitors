@@ -2753,7 +2753,7 @@ function cgRender(){
     else if (!cg.endAt) body = `<p>Team ${cg.turn+1}: pick one player to ${how}. Only they look at the tablet. Their team has 60 seconds to guess as many as they can.</p><button class="gold wide" id="cgGo" style="min-height:70px">Start 60 seconds</button>`;
     else body = `<div class="big" id="cgT">${Math.max(0,Math.ceil((cg.endAt-Date.now())/1000))}</div>${cg.shown?`<p style="font-size:1.8rem;text-align:center"><b>${esc(deck[wi])}</b></p>`:`<button class="wide" id="cgPeek">Show the word (actor only)</button>`}
       <div class="row"><button class="primary" id="cgGot" style="flex:1;min-height:64px">Got it ✓</button><button class="wide" id="cgSkip" style="flex:1;min-height:64px">Skip</button></div>`;
-    ov.innerHTML = `<div class="inner" style="text-align:left"><h2 style="text-align:center">${label}</h2>${cgTeamCard()}<p class="muted small">Turn ${Math.min(cg.turns+1,cg.maxTurns)} of ${cg.maxTurns}</p>${body}${cg.endAt?"":quit}</div>`;
+    ov.innerHTML = `<div class="inner" style="text-align:left"><h2 style="text-align:center">${label}</h2>${cgTeamCard()}<p class="muted small">Turn ${Math.min(cg.turns+1,cg.maxTurns)} of ${cg.maxTurns}</p>${body}${quit}</div>`;
     const go = $("#cgGo",ov); if (go) go.onclick = () => { cg.endAt = Date.now()+60000; cg.shown = false; cgRender();
       clearInterval(cgTick); cgTick = setInterval(() => { if (!cg || !cg.endAt) return; const left = Math.ceil((cg.endAt-Date.now())/1000); const t=$("#cgT",ov); if (t) t.textContent = Math.max(0,left);
         if (left<=0){ clearInterval(cgTick); cgTick=null; try{ navigator.vibrate&&navigator.vibrate([400,150,400]); chime(); }catch(e){} cg.endAt=null; cg.turns++; cg.turn = 1-cg.turn; cg.idx++; cgRender(); } }, 250); };
@@ -3451,7 +3451,8 @@ function ghostShield(){
   if (top.length){ const mx = Math.max(...top.map(x=>x[1])); const t = top.filter(x=>x[1]===mx).map(x=>x[0]); pick = t[Math.floor(Math.random()*t.length)]; }
   if (!won) pick = null;
   if (pick){ giveShield(S.players.find(x=>x.name===pick), true); logit("The ghosts gave out a secret shield."); }
-  if (S.players.some(p=>p.status!=="alive") && S.ghtid) publish(S.ghtid, {k:"gshield", round:S.round, v: pick || "", lost: !won, detail: o===undefined ? res.text : ""});
+  const played = Object.keys((S.gans||{})[S.round]||{}).length || o!==undefined;
+  if (played && S.ghtid) publish(S.ghtid, {k:"gshield", round:S.round, v: pick || "", lost: !won, detail: o===undefined ? res.text : ""});
 }
 function openWindow(){ ghostShield(); S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
@@ -3637,14 +3638,12 @@ afterBanish = function(){ if (S._final){ S._final=false; if (checkWin()){ save()
 // ---- lobby & over ----
 function renderLobby(){
   app.innerHTML = `
-  <div class="hero"><div class="eyebrow">Game phone · The Traitors are chosen</div><h2>Tell everyone the code</h2>
-   <div class="code" style="margin-top:10px">${esc(S.code)}</div>
-   <p class="muted small">Guests open the link, tap <b>Check my role</b>, and type this code and their name exactly as listed below. Their phone shows a two-letter seal. It should match the seal here.</p></div>
-  <div class="card"><h3>Send everyone their link</h3><p>Each player gets a personal link to their own live page. It shows their role, updates as the game moves on, and becomes the Traitors' murder screen at night.</p>
-   <button class="primary wide" id="links">Get personal links</button></div>
+  <div class="hero"><div class="eyebrow">Game phone · The Traitors are chosen</div><h2>Hand out the links</h2>
+   <p class="muted">Each player gets their own private page. Tap below, then <b>Pass it around</b>: everyone scans their own QR code with their phone camera.</p>
+   <button class="primary wide" id="links" style="margin-top:10px">Hand out personal links</button></div>
   <div class="card"><h3>Players and seals</h3>
    <div class="roster">${S.players.map(p=>`<div class="chip"><span>${esc(p.name)}</span><span class="tag s">${esc(p.seal)}</span></div>`).join("")}</div>
-   <p class="muted small">No phone? Tap below and pass this phone around. Each player taps their name and holds to see their role.</p>
+   <p class="muted small">Backup: if a link won't open, a guest can type game code <b>${esc(S.code)}</b> and their name on the home screen. The two-letter seal on their phone should match the one here. No phone at all? Tap below and pass this phone around.</p>
    <button class="wide" id="roleChk">Check roles on this phone</button></div>
   <div class="card"><p>Everyone knows their role? Begin with the first challenge.</p>
    <button class="primary wide" id="start">Start round 1</button></div>
