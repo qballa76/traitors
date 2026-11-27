@@ -227,7 +227,48 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) setT
 // ---------- state ----------
 let S = null;
 function load(){ try{ const raw = localStorage.getItem(KEY); if(raw) S = JSON.parse(raw); }catch(e){ S = null; } }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} broadcast(); }
+function save(){ if (S) paceCheck(); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} broadcast(); }
+// ---------- auto pacing ----------
+const SHARE = {mission:.35, table:.35, night:.15, breakfast:.15};
+const DUE_LABEL = {mission:"Round table", table:"Voting", night:"Breakfast", breakfast:"Breakfast entrance"};
+function paceCheck(){
+  if (!S.pace || !SHARE[S.phase]) { if (S.dueFor !== S.phase+"|"+S.round){ S.dueAt=null; S.dueFor=S.phase+"|"+S.round; } return; }
+  const tag = S.phase+"|"+S.round; if (S.dueFor===tag) return;
+  S.dueFor = tag; S.dueFired = false;
+  const now = Date.now();
+  if (S.phase==="mission" || !S.perRound){
+    const roundsLeft = Math.max(1, Math.ceil((alive().length - S.finalSize)/2));
+    let per = 25*60000;
+    if (S.endMs) per = (S.endMs - 10*60000 - now) / roundsLeft;
+    S.perRound = Math.max(8*60000, Math.min(60*60000, per));
+  }
+  S.dueAt = now + Math.round(S.perRound * SHARE[S.phase]);
+}
+function paceTick(){
+  if (S && S.pace && view==="host" && S.endMs && !S.endWarned && Date.now() > S.endMs - 12*60000 && (S.phase==="mission"||S.phase==="table")){ S.endWarned = true; save(); buzz("Time's nearly up. Finish this round table, then tap \"Time's up: go to the endgame\"."); }
+  if (!S || !S.pace || !S.dueAt || S.dueFired || view!=="host") return;
+  const el = $("#paceLeft"); if (el) el.textContent = leftText();
+  if (Date.now() < S.dueAt) return;
+  S.dueFired = true;
+  if (S.phase==="mission"){ S.phase="table"; S.votes={}; S.candidates=null; S.revotes=0; save(); buzz("Round table time. Gather everyone at the table."); return render(); }
+  if (S.phase==="table"){ save(); buzz("Time to vote. Go around the table and enter the votes."); return render(); }
+  if (S.phase==="night"){
+    if (S.locked){ S.window=false; S.phase="breakfast"; S.called=[]; save(); buzz("Breakfast time. Everyone wait outside the room."); return render(); }
+    save(); buzz("The Traitors still haven't chosen. Give them a nudge."); return render();
+  }
+  if (S.phase==="breakfast"){ save(); buzz("Start the breakfast entrance."); return render(); }
+}
+function leftText(){ const m = Math.round((S.dueAt - Date.now())/60000); return m<=0 ? "now" : "in "+m+" min"; }
+setInterval(() => { try{ paceTick(); }catch(e){} }, 10000);
+function paceCard(){
+  if (!S.pace) return "";
+  if (S.phase==="final") return `<div class="card" style="border-color:var(--gold)"><p>⏱ <b>Endgame.</b> No more timers. Finish it whenever you're ready.</p></div>`;
+  if (!S.dueAt) return "";
+  const next = DUE_LABEL[S.phase];
+  const auto = S.phase==="mission" ? "The game moves to the round table by itself." : S.phase==="night" ? (S.locked ? "The Traitors have chosen. Breakfast starts by itself." : "Waiting for the Traitors.") : "This phone buzzes you when it's time.";
+  return `<div class="card" style="border-color:var(--gold)"><p>⏱ <b>${esc(next)}</b> at ${esc(new Date(S.dueAt).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))} · <span id="paceLeft">${esc(leftText())}</span></p><p class="muted small">${auto} Keep this phone's screen on.</p>
+   <div class="row"><button class="ghost" id="paceNow" style="padding:6px 12px;min-height:36px">Do it now</button><button class="ghost" id="pace5" style="padding:6px 12px;min-height:36px">+5 min</button></div></div>`;
+}
 const alive = () => S.players.filter(p => p.status==="alive");
 const byKey = k => S.players.find(p => p.key===k);
 const traitorsAlive = () => alive().filter(p => p.traitor);
@@ -499,7 +540,8 @@ function renderSetup(){
       <div class="field"><label for="fs">Endgame at</label><select id="fs">
         ${[3,4,5].map(i=>`<option value="${i}"${draft.finalSize===String(i)?" selected":""}>${i} players left</option>`).join("")}</select></div>
     </div>
-    <div class="field"><label for="ends">Game ends at (optional)</label><input type="time" id="ends" value="${esc(draft.endsAt)}"></div>
+    <label class="row" style="gap:8px"><input type="checkbox" id="pace" style="width:auto"${draft.pace!==false?" checked":""}> Run the game on a timer (this phone paces the rounds and buzzes you)</label>
+    <div class="field"><label for="ends">Game ends at</label><input type="time" id="ends" value="${esc(draft.endsAt)}"></div>
     <label class="row" style="gap:8px"><input type="checkbox" id="rc" style="width:auto"${draft.recruit!==false?" checked":""}> Ultimatum: when a Traitor is banished, the others recruit a Faithful (join or be murdered)</label>
     <label class="row" style="gap:8px"><input type="checkbox" id="sh" style="width:auto"${draft.shields?" checked":""}> Use shields from challenges</label>
     <label class="row" style="gap:8px"><input type="checkbox" id="ss" style="width:auto"${draft.secretShields!==false?" checked":""}> Keep shields secret (only the winner's page shows it)</label>
@@ -512,6 +554,7 @@ function renderSetup(){
   $("#fs").onchange = e => { draft.finalSize = e.target.value; saveDraft(); };
   $("#sh").onchange = e => { draft.shields = e.target.checked; saveDraft(); };
   $("#ss").onchange = e => { draft.secretShields = e.target.checked; saveDraft(); };
+  $("#pace").onchange = e => { draft.pace = e.target.checked; saveDraft(); };
   $("#rc").onchange = e => { draft.recruit = e.target.checked; saveDraft(); };
   $("#ends").onchange = e => { draft.endsAt = e.target.value; saveDraft(); };
   $("#back").onclick = () => { view="home"; render(); };
@@ -526,7 +569,8 @@ function renderSetup(){
     if (kk*2 >= names.length){ err.textContent="Too many Traitors for this many players."; err.hidden=false; return; }
     const code = makeCode(keys, kk);
     if (!code){ err.textContent="Couldn't pick Traitors. Tap again."; err.hidden=false; return; }
-    S = { code, recruitOn: draft.recruit!==false, gid:"tg"+rid(18), tid:"tt"+rid(18), called:[], picks:{}, window:false, locked:false, endsAt:draft.endsAt||"", turret:false, round:1, phase:"lobby", finalSize:parseInt(draft.finalSize,10), shields:!!draft.shields, secretShields: draft.secretShields!==false,
+    let endMs = null; if (draft.endsAt){ const [hh,mm] = draft.endsAt.split(":").map(Number); const d = new Date(); d.setHours(hh,mm,0,0); if (d.getTime() <= Date.now()) d.setDate(d.getDate()+1); endMs = d.getTime(); }
+    S = { code, pace: draft.pace!==false, endMs, recruitOn: draft.recruit!==false, gid:"tg"+rid(18), tid:"tt"+rid(18), called:[], picks:{}, window:false, locked:false, endsAt:draft.endsAt||"", turret:false, round:1, phase:"lobby", finalSize:parseInt(draft.finalSize,10), shields:!!draft.shields, secretShields: draft.secretShields!==false,
       players: names.map((n,i)=>({name:n, key:keys[i], seal:sealOf(code,keys[i]), traitor:isTraitor(code,keys[i]), status:"alive", shield:false, pt:"tp"+rid(16)})),
       votes:{}, candidates:null, revotes:0, banished:null, murder:null, endVotes:{}, log:[], winner:null };
     save(); hostListen(); render();
@@ -550,6 +594,7 @@ function renderHost(){
   <div class="row" style="justify-content:space-between"><div><div class="eyebrow">Round ${S.round} · Code ${esc(S.code)}</div><h2>${S.phase==="final"?"The endgame":esc(PHASES.find(p=>p[0]===ph)[1])}</h2></div>
    <span class="muted small" style="text-align:right">${f} left${S.endsAt?`<br>Ends ${esc(fmtTime(S.endsAt))}`:""}</span></div>
   ${S.phase==="final"?"":`<div class="steps">${PHASES.map(p=>`<span class="step${p[0]===ph?" on":""}">${p[1]}</span>`).join("")}</div>`}
+  ${paceCard()}
   ${body}
   ${announceCard()}
   <div class="card"><h3>The players</h3><div class="roster">${S.players.map(chip).join("")}</div></div>
@@ -651,9 +696,9 @@ function wireHost(){
   const eg = $("#endGo"); if (eg) eg.onclick = endDecision;
   const nt = $("#night"); if (nt) nt.onclick = runNight;
   const tu = $("#turret"); if (tu) tu.onclick = () => { S.turret=true; save(); turretLock(); };
-  const ow = $("#openWin"); if (ow) ow.onclick = () => { S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
-    S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
-    publish(S.tid, {k:"mode", round:S.round, mode:S.mode, names: traitorsAlive().map(x=>x.name)}); save(); render(); };
+  const ow = $("#openWin"); if (ow) ow.onclick = () => { openWindow(); save(); render(); };
+  const pn = $("#paceNow"); if (pn) pn.onclick = () => { S.dueAt = Date.now(); S.dueFired = false; paceTick(); };
+  const p5 = $("#pace5"); if (p5) p5.onclick = () => { S.dueAt += 5*60000; S.dueFired = false; save(); render(); };
   const tb = $("#toBreak"); if (tb) tb.onclick = () => { S.window=false; S.phase="breakfast"; S.called=[]; save(); render(); };
   const cw = $("#closeWin"); if (cw) cw.onclick = () => confirmBox("Close the murder window? Nobody will be murdered this round.", "Close it", () => { S.murder=null; S.locked=true; S.window=false; S.phase="breakfast"; S.called=[]; publish(S.tid,{k:"lock",round:S.round,v:"-"}); save(); render(); });
   const tf = $("#toFinal"); if (tf) tf.onclick = () => confirmBox("Time's up? Skip to the final vote: end the game or banish again.", "Go to the endgame", () => { logit("Time ran out. On to the endgame."); S.phase="final"; S.endVotes={}; save(); render(); });
@@ -704,10 +749,13 @@ function checkWin(){
   if (t>=f){ S.winner="traitors"; S.phase="over"; return true; }
   return false;
 }
+function openWindow(){ S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
+  S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
+  publish(S.tid, {k:"mode", round:S.round, mode:S.mode, names: traitorsAlive().map(x=>x.name)}); }
 function afterBanish(){
   if (checkWin()){ save(); return render(); }
   if (S.phase==="final" || alive().length<=S.finalSize){ S.phase="final"; S.endVotes={}; save(); return render(); }
-  S.phase="night"; save(); render();
+  S.phase="night"; if (S.pace) openWindow(); save(); render();
 }
 function endDecision(){
   const vs = alive().map(v=>S.endVotes[v.key]);
