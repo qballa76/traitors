@@ -151,7 +151,7 @@ function subscribe(topics, onMsg, onStatus){
 let lastSent = "", pubTimer = null;
 function publicState(){
   const pl = S.players.map(p=>({n:p.name, s:p.status[0], sh:(p.shield && !S.secretShields)?1:0}));
-  return {k:"state", round:S.round, phase:S.phase, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
+  return {k:"state", round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
     players:pl, over: S.phase==="over" ? {w:S.winner, t:S.players.filter(p=>p.traitor).map(p=>p.name)} : null};
 }
 function broadcast(){
@@ -165,7 +165,7 @@ function hostListen(){
   subscribe([S.tid].concat(S.players.map(p=>p.pt).filter(Boolean)), (topic, m) => {
     if (S && m.k==="sus"){
       const p = S.players.find(x=>x.pt===topic);
-      if (p && m.round===S.round && S.phase==="night"){ S.sus = S.sus||{}; S.sus[p.name] = m.v; save(); }
+      if (p && m.round===S.round && S.phase==="night" && (m.a||0)===(S.redo||0)){ S.sus = S.sus||{}; S.sus[p.name] = m.v; save(); }
       return;
     }
     if (S && m.k==="claim"){
@@ -186,11 +186,27 @@ function hostListen(){
       S.locked = true; S.offer = null; if (hostReady) buzz("The Traitors have chosen."); save(); if (view==="host" && ov.hidden) render(); return;
     }
     if (!S || m.k!=="pick" || m.round!==S.round || S.phase!=="night" || !S.window || S.locked || S.offer) return;
+    if ((m.a||0) !== (S.redo||0) || !Array.isArray(m.v)) return;
     S.picks = S.picks || {}; S.picks[m.by] = m.v;
     const tr = traitorsAlive().map(p=>p.name);
-    const vals = tr.map(n => S.picks[n]);
-    if (vals.every(v => v!==undefined && v===vals[0])){
-      const vic = vals[0]==="-" ? null : S.players.find(p=>p.name===vals[0]);
+    const lists = tr.map(n => S.picks[n]);
+    if (lists.every(Boolean)){
+      const score = {};
+      lists[0].forEach(name => { if (lists.every(l => l.includes(name))) score[name] = lists.reduce((t,l)=>t+l.indexOf(name),0); });
+      const cands = Object.keys(score);
+      if (!cands.length){
+        const last = Object.assign({}, S.picks);
+        S.redo = (S.redo||0) + 1; S.picks = {}; S.sus = {};
+        publish(S.tid, {k:"redo", round:S.round, a:S.redo, last});
+        save(); if (hostReady) buzz("The Traitors didn't agree. Everyone check your phones and pick again."); if (view==="host" && ov.hidden) render(); return;
+      }
+      const worst = c => Math.max(...lists.map(l=>l.indexOf(c)));
+      const best = Math.min(...cands.map(c=>score[c]));
+      let tops = cands.filter(c=>score[c]===best);
+      const bw = Math.min(...tops.map(worst)); tops = tops.filter(c=>worst(c)===bw);
+      const chosen = tops[Math.floor(Math.random()*tops.length)];
+      const vals = [chosen];
+      const vic = S.players.find(p=>p.name===chosen);
       if (S.mode==="recruit" && vic){
         S.offer = {key: vic.key, round: S.round};
         publish(S.tid, {k:"lock", round:S.round, v: vals[0], mode:"recruit"});
@@ -372,16 +388,18 @@ function renderPersonal(){
     if (topic===personal.pt){
       if (m.k==="offer"){ offer = m; }
       else if (m.k==="joined"){ answered = true; const first = !joined; joined = {tid:m.tid, fellows:m.fellows}; teamNames = null;
-        if (first){ subscribe([m.tid], (tp, mm) => { onTeam(mm); if (mm.k==="pick" && live && mm.round===live.round){ picks[mm.by]=mm.v; if (mm.by===personal.name) myPick=mm.v; } else if (mm.k==="lock" && live && mm.round===live.round){ lockV = mm.v; lockMode = mm.mode||"murder"; } renderLive(); }, ()=>{}); personal.tid = m.tid; }
+        if (first){ subscribe([m.tid], (tp, mm) => { onTeam(mm); if (mm.k==="pick" && live && mm.round===live.round && (mm.a||0)===(live.redo||0) && Array.isArray(mm.v)){ picks[mm.by]=mm.v; if (mm.by===personal.name){ myList=mm.v.slice(); submitted=true; } } else if (mm.k==="redo" && live && mm.round===live.round){ lastPicks = mm.last; } else if (mm.k==="lock" && live && mm.round===live.round){ lockV = mm.v; lockMode = mm.mode||"murder"; } renderLive(); }, ()=>{}); personal.tid = m.tid; }
         renderPersonal(); return; }
       else if (m.k==="refused"){ answered = true; }
       else if (m.k==="shield"){ myShield = m; claimMsg = ""; }
+      else if (m.k==="sus" && live && m.round===live.round && (m.a||0)===(live.redo||0) && Array.isArray(m.v)){ myList = m.v.slice(); submitted = true; }
       else if (m.k==="claimno"){ if (claimPending) claimMsg = "That code didn't work, or someone already found the shield."; claimPending = false; }
       renderLive(); return;
     }
     onTeam(m);
-    if (m.k==="state"){ if (!live || (m.seq||0) >= (live.seq||0)){ if (live && live.round!==m.round){ picks={}; myPick=null; lockV=null; refusedBy=null; mySus=null; murderOpen=false; } live = m; } }
-    else if (m.k==="pick" && live && m.round===live.round){ picks[m.by] = m.v; if (m.by===personal.name) myPick = m.v; }
+    if (m.k==="state"){ if (!live || (m.seq||0) >= (live.seq||0)){ if (live && live.round===m.round && (m.redo||0)!==(live.redo||0)){ myList=[]; submitted=false; picks={}; } if (live && live.round!==m.round){ myList=[]; submitted=false; lastPicks=null; picks={}; myPick=null; lockV=null; refusedBy=null; mySus=null; murderOpen=false; } live = m; } }
+    else if (m.k==="pick" && live && m.round===live.round && (m.a||0)===(live.redo||0) && Array.isArray(m.v)){ picks[m.by] = m.v; if (m.by===personal.name){ myList = m.v.slice(); submitted = true; } }
+    else if (m.k==="redo" && live && m.round===live.round){ lastPicks = m.last; }
     else if (m.k==="lock" && live && m.round===live.round){ lockV = m.v; lockMode = m.mode||"murder"; }
     renderLive();
   }, ok => { liveOK = ok; const c=$("#conn"); if (c) c.textContent = ok ? "● Live" : "○ Reconnecting…"; });
@@ -395,7 +413,7 @@ function maybeAlert(){
   const called = (live.called||[]).includes(me);
   const offerOpen = !!(offer && !answered && offer.round===live.round && live.phase==="night");
   const traitorWin = !!(t && live.phase==="night" && live.win);
-  const key = [live.round, live.phase, called, mine.s, offerOpen, traitorWin, !!live.over].join("|");
+  const key = [live.round, live.phase, live.redo||0, called, mine.s, offerOpen, traitorWin, !!live.over].join("|");
   if (key === alertKey) return;
   const prev = alertKey; alertKey = key;
   if (!alertReady || prev===null) return;
@@ -404,6 +422,7 @@ function maybeAlert(){
   else if (mine.s==="m") msg = "You were murdered.";
   else if (mine.s==="b") msg = "You were banished.";
   else if (offerOpen) msg = "The Traitors have chosen you. Decide now.";
+  else if (live.phase==="night" && live.redo) msg = "Not over yet! Open your night screen and pick again.";
   else if (traitorWin) msg = "Night has fallen. Open your night screen.";
   else if (live.phase==="breakfast" && called) msg = "You've been called. Come in to breakfast!";
   else msg = ({lobby:"The game is starting.", mission:"Shield challenge! Head to the table.", table:"Round table! Time to vote.", night:"Night has fallen. Open your night screen.", breakfast:"Breakfast! Wait outside to be called in.", final:"The endgame! Everyone to the table."})[live.phase] || "Something happened in the game.";
@@ -442,6 +461,13 @@ function renderLive(){
     else if (!t && live.phase==="night" && !(offer && !answered && offer.round===live.round)) html += suspectPanel(P);
   }
   el.innerHTML = html;
+  el.querySelectorAll("[data-rank]").forEach(b => b.onclick = () => { const n = b.dataset.rank; const i = myList.indexOf(n); if (i>=0) myList.splice(i,1); else if (myList.length<3) myList.push(n); renderLive(); });
+  const rc = $("#rkClear"); if (rc) rc.onclick = () => { myList = []; renderLive(); };
+  const rch = $("#rkChange"); if (rch) rch.onclick = () => { submitted = false; renderLive(); };
+  const rs = $("#rkSubmit"); if (rs) rs.onclick = () => { submitted = true;
+    if (amTraitor()){ picks[me] = myList.slice(); publish(personal.tid, {k:"pick", round: live.round, a: live.redo||0, by: me, v: myList.slice()}); }
+    else publish(personal.pt, {k:"sus", round: live.round, a: live.redo||0, v: myList.slice()});
+    renderLive(); };
   el.querySelectorAll("[data-sus]").forEach(b => b.onclick = () => { mySus = b.dataset.sus; publish(personal.pt, {k:"sus", round: live.round, v: mySus}); renderLive(); });
   const mo = $("#mOpen"); if (mo) mo.onclick = () => { murderOpen = true; renderLive(); };
   const mh = $("#mHide"); if (mh) mh.onclick = () => { murderOpen = false; renderLive(); };
@@ -464,11 +490,24 @@ function offerPanel(){
    <button class="primary wide" id="offYes">Join the Traitors</button>
    <button class="wide" id="offNo">Refuse, and be murdered</button></div>`;
 }
-let mySus = null;
+let mySus = null, myList = [], submitted = false, lastPicks = null;
+function rankCard(title, intro, cands, extra){
+  const need = Math.min(3, cands.length);
+  if (submitted) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${title}</h2>
+    <p>Your top ${need}: ${myList.map((n,i)=>`<b>${i+1}.</b> ${esc(n)}`).join("&nbsp;&nbsp; ")}</p>${extra||""}
+    <p class="muted small">Submitted. Act natural.</p><button class="ghost" id="rkChange">Change my picks</button> <button class="ghost" id="mHide">Hide this screen</button></div>`;
+  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${title}</h2><p>${intro}</p>${extra||""}
+   <p class="small muted">Tap ${need} names in order: 1st, 2nd, 3rd.</p>
+   <div class="victims">${cands.map(c=>{ const i = myList.indexOf(c.n); return `<button data-rank="${esc(c.n)}" class="${i>=0?"primary":""}">${i>=0?`<b>${i+1}.</b> `:""}${esc(c.label||c.n)}</button>`; }).join("")}</div>
+   <div class="row"><button class="ghost" id="rkClear">Clear</button><button class="primary" id="rkSubmit" style="flex:1"${myList.length===need&&need>0?"":" disabled"}>Submit my top ${need}</button></div>
+   <button class="ghost" id="mHide">Hide this screen</button></div>`;
+}
 function suspectPanel(P){
   const me = personal.name;
   if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
-  const others = P.filter(p => p.s==="a");
+  const cands = P.filter(p => p.s==="a").map(p => ({n:p.n, label: p.n===me ? p.n+" (me)" : p.n}));
+  return rankCard((live.redo?"Not over yet! ":"")+"Who will be murdered?", "Guess who the Traitors are murdering tonight. Anyone with the victim in their top 3 is named at breakfast.", cands);
+  const others = [];
   return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>Who will be murdered?</h2>
    <p>Guess who the Traitors are murdering tonight. Everyone who guesses right is named at breakfast.</p>
    <div class="victims">${others.map(v=>`<button data-sus="${esc(v.n)}" class="${mySus===v.n?"primary":""}">${esc(v.n===me?v.n+" (me)":v.n)}</button>`).join("")}</div>
@@ -494,6 +533,11 @@ function murderPanel(P){
   const victims = P.filter(p => p.s==="a" && !allT.includes(p.n) && !p.sh);
   const shielded = P.filter(p => p.s==="a" && p.sh && !allT.includes(p.n));
   const others = team.filter(n=>n!==me);
+  const extra = (recruiting?`<p>One of you was banished. Your top pick gets an ultimatum: join you, or be murdered.</p>`:"")
+    + (others.length ? others.map(n=>`<p class="small">${esc(n)}: ${picks[n]?picks[n].map((x,i)=>`<b>${i+1}.</b> ${esc(x)}`).join("&nbsp; "):"hasn't submitted yet"}</p>`).join("") : "")
+    + (lastPicks ? `<p class="small" style="color:var(--gold)">Your lists didn't match last time. Last time: ${Object.entries(lastPicks).map(([n,l])=>`${esc(n)}: ${l.map(esc).join(", ")}`).join(" · ")}</p>` : "");
+  const intro = others.length ? `Rank your top 3. When everyone has submitted, the best-ranked name on all your lists is chosen. No match means you pick again.` : `You're the last Traitor. Your 1st pick is final.`;
+  return rankCard((live.redo?"Not over yet! ":"")+(recruiting?"Recruit a new Traitor":"Choose your victim"), intro, victims.map(v=>({n:v.n})), extra);
   return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>${recruiting?"Recruit a new Traitor":"Choose your victim"}</h2>
    ${recruiting?`<p>One of you was banished. Tonight, pick a Faithful to give an ultimatum: join you, or be murdered.</p>`:""}
    <p>${others.length?`Agree with <b style="color:var(--blood)">${others.map(esc).join(", ")}</b>. The murder happens when you all pick the same person.`:`You're the last Traitor. Your pick is final.`}</p>
@@ -768,7 +812,7 @@ function checkWin(){
   if (t>=f){ S.winner="traitors"; S.phase="over"; return true; }
   return false;
 }
-function openWindow(){ S.sus={}; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
+function openWindow(){ S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
   publish(S.tid, {k:"mode", round:S.round, mode:S.mode, names: traitorsAlive().map(x=>x.name)}); }
 function afterBanish(){
@@ -918,10 +962,10 @@ function breakfast(){
       <button class="gold wide" id="call" style="min-height:70px">${idx>=queue.length?"Everyone's called. Who's missing?":"Call the next guest"}</button></div>`;
     $("#call",ov).onclick = call;
   };
-  const susLine = (() => { const g = S.sus||{}; const n = Object.keys(g).length; if (!n) return "";
-    const answer = victim ? victim.name : "-";
-    const right = Object.entries(g).filter(([by,v]) => v===answer).map(([by])=>by);
-    return `<p class="small" style="color:var(--gold)">${right.length ? `🔮 Guessed it right: <b>${right.map(esc).join(", ")}</b> (${right.length} of ${n}).` : `🔮 Nobody guessed it. ${n} guess${n===1?"":"es"} were made.`}</p>`; })();
+  const susLine = (() => { const g = S.sus||{}; const n = Object.keys(g).length; if (!n || !victim) return "";
+    const answer = victim.name;
+    const right = Object.entries(g).filter(([by,v]) => Array.isArray(v) && v.includes(answer)).map(([by,v]) => v[0]===answer ? by+" ⭐" : by);
+    return `<p class="small" style="color:var(--gold)">${right.length ? `🔮 Had it in their top 3: <b>${right.map(esc).join(", ")}</b> (${right.length} of ${n}). ⭐ = guessed it first.` : `🔮 Nobody saw it coming. ${n} people guessed.`}</p>`; })();
   const finale = () => {
     if (!victim){
       logit(blocked ? "The Traitors' victim was protected by a shield." : "The Traitors spared everyone.");
