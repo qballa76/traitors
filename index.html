@@ -66,6 +66,7 @@ textarea{min-height:150px;resize:vertical}
 .victims{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .hold{user-select:none;-webkit-user-select:none;touch-action:none}
 .fade{animation:fade .9s ease both}
+@keyframes flash{0%,100%{filter:none}50%{filter:brightness(1.6)}}
 @keyframes fade{from{opacity:.0;transform:scale(.96)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.fade{animation:none}}
 .hero{text-align:center;display:flex;flex-direction:column;gap:8px;padding-top:12px}
@@ -158,7 +159,7 @@ function broadcast(){
   clearTimeout(pubTimer);
   pubTimer = setTimeout(() => { const st = publicState(); const js = JSON.stringify(st); if (js===lastSent) return; lastSent = js; st.seq = Date.now(); publish(S.gid, st); }, 300);
 }
-let hostSub = false, relayOK = null;
+let hostSub = false, relayOK = null, hostReady = false; setTimeout(()=>{ hostReady = true; }, 2500);
 function hostListen(){
   if (hostSub || !S || !S.tid) return; hostSub = true;
   subscribe([S.tid].concat(S.players.map(p=>p.pt).filter(Boolean)), (topic, m) => {
@@ -177,7 +178,7 @@ function hostListen(){
         publish(r.pt, {k:"joined", round:S.round, tid:S.tid, fellows: traitorsAlive().filter(x=>x.key!==r.key).map(x=>x.name)});
         publish(S.tid, {k:"team", round:S.round, names: traitorsAlive().map(x=>x.name), joined:r.name});
       } else { S.murder = r.key; publish(S.tid, {k:"refused", round:S.round, by:r.name}); publish(r.pt, {k:"refused", round:S.round}); }
-      S.locked = true; S.offer = null; save(); if (view==="host" && ov.hidden) render(); return;
+      S.locked = true; S.offer = null; if (hostReady) buzz("The Traitors have chosen."); save(); if (view==="host" && ov.hidden) render(); return;
     }
     if (!S || m.k!=="pick" || m.round!==S.round || S.phase!=="night" || !S.window || S.locked || S.offer) return;
     S.picks = S.picks || {}; S.picks[m.by] = m.v;
@@ -190,13 +191,38 @@ function hostListen(){
         publish(S.tid, {k:"lock", round:S.round, v: vals[0], mode:"recruit"});
         publish(vic.pt, {k:"offer", round:S.round, tid:S.tid});
       } else {
-        S.murder = vic ? vic.key : null; S.locked = true;
+        S.murder = vic ? vic.key : null; S.locked = true; if (hostReady) buzz("The Traitors have chosen.");
         publish(S.tid, {k:"lock", round:S.round, v: vals[0]});
       }
     }
     save(); if (view==="host" && ov.hidden) render();
   }, ok => { relayOK = ok; const d=$("#relay"); if(d) d.textContent = ok ? "● Live" : "○ Reconnecting…"; });
 }
+
+// ---------- alerts ----------
+let actx = null;
+function unlockAudio(){ try{ if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==="suspended") actx.resume(); }catch(e){} }
+document.addEventListener("pointerdown", unlockAudio, {passive:true});
+document.addEventListener("keydown", unlockAudio);
+function chime(){
+  try{ unlockAudio(); if(!actx) return; const t0 = actx.currentTime;
+    [[523.25,0],[659.25,.18],[783.99,.36]].forEach(([f,d]) => { const o=actx.createOscillator(), g=actx.createGain(); o.type="sine"; o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,t0+d); g.gain.exponentialRampToValueAtTime(0.35,t0+d+0.03); g.gain.exponentialRampToValueAtTime(0.0001,t0+d+0.5);
+      o.connect(g); g.connect(actx.destination); o.start(t0+d); o.stop(t0+d+0.55); }); }catch(e){}
+}
+const BASE_TITLE = document.title;
+function buzz(text){
+  try{ if (navigator.vibrate) navigator.vibrate([350,150,350,150,350]); }catch(e){}
+  chime();
+  document.title = "🔴 Check your phone";
+  let b = document.getElementById("alertBar");
+  if (!b){ b = document.createElement("button"); b.id = "alertBar"; document.body.appendChild(b);
+    b.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:60;border:0;border-radius:0;background:var(--blood);color:#fff7ee;font:inherit;font-weight:700;font-size:1.1rem;min-height:64px;padding:calc(env(safe-area-inset-top,0px) + 14px) max(16px,env(safe-area-inset-right,0px)) 14px max(16px,env(safe-area-inset-left,0px));animation:flash 1s ease-in-out 4";
+    b.onclick = () => { b.hidden = true; document.title = BASE_TITLE; window.scrollTo({top:0,behavior:"smooth"}); }; }
+  b.textContent = "🔔 " + text + "  (tap)"; b.hidden = false;
+  b.style.animation = "none"; void b.offsetWidth; b.style.animation = "flash 1s ease-in-out 4";
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) setTimeout(()=>{ document.title = BASE_TITLE; }, 4000); });
 
 // ---------- state ----------
 let S = null;
@@ -270,7 +296,7 @@ function renderPersonal(){
   const t = amTraitor(); const fellows = myFellows();
   app.innerHTML = `
   <div class="hero"><div class="candle">✦ ✦ ✦</div><div class="eyebrow">The Thanksgiving Traitors</div><h1>${esc(name)}</h1>
-   <p class="muted">This is your private page. Keep it open, and don't let anyone see your screen.</p>
+   <p class="muted">This is your private page. Keep it open, and don't let anyone see your screen. It buzzes and chimes when something happens.</p>
    <p class="small" id="conn" style="color:var(--muted)">○ Connecting…</p></div>
   <div id="live" class="stack"></div>
   <div class="card"><button class="gold wide hold" id="hold" style="min-height:110px;font-size:1.2rem">Press and hold to see your role</button>
@@ -314,7 +340,31 @@ function renderPersonal(){
     renderLive();
   }, ok => { liveOK = ok; const c=$("#conn"); if (c) c.textContent = ok ? "● Live" : "○ Reconnecting…"; });
 }
+let alertKey = null, alertReady = false;
+setTimeout(()=>{ alertReady = true; }, 2500);
+function maybeAlert(){
+  if (!live || !personal) return;
+  const me = personal.name, t = amTraitor();
+  const mine = (live.players||[]).find(p=>p.n===me) || {s:"a"};
+  const called = (live.called||[]).includes(me);
+  const offerOpen = !!(offer && !answered && offer.round===live.round && live.phase==="night");
+  const traitorWin = !!(t && live.phase==="night" && live.win);
+  const key = [live.round, live.phase, called, mine.s, offerOpen, traitorWin, !!live.over].join("|");
+  if (key === alertKey) return;
+  const prev = alertKey; alertKey = key;
+  if (!alertReady || prev===null) return;
+  let msg = "";
+  if (live.over) msg = "The game is over. See who won!";
+  else if (mine.s==="m") msg = "You were murdered.";
+  else if (mine.s==="b") msg = "You were banished.";
+  else if (offerOpen) msg = "The Traitors have chosen you. Decide now.";
+  else if (traitorWin) msg = "The murder window is open. Choose your victim.";
+  else if (live.phase==="breakfast" && called) msg = "You've been called. Come in to breakfast!";
+  else msg = ({lobby:"The game is starting.", mission:"Shield challenge! Head to the table.", table:"Round table! Time to vote.", night:"Night has fallen.", breakfast:"Breakfast! Wait outside to be called in.", final:"The endgame! Everyone to the table."})[live.phase] || "Something happened in the game.";
+  buzz(msg);
+}
 function renderLive(){
+  maybeAlert();
   const el = $("#live"); if (!el) return;
   const me = personal.name, t = amTraitor();
   if (!live){ el.innerHTML = `<div class="card"><h3>Waiting for the game</h3><p class="muted">The game phone hasn't started yet. This page will update by itself.</p></div>`; return; }
