@@ -962,7 +962,7 @@ function breakfast(){
       <button class="gold wide" id="call" style="min-height:70px">${idx>=queue.length?"Everyone's called. Who's missing?":"Call the next guest"}</button></div>`;
     $("#call",ov).onclick = call;
   };
-  const susLine = (() => { const g = S.sus||{}; const n = Object.keys(g).length; if (!n || !victim) return "";
+  const susLine = ""; const _unusedSus = (() => { const g = S.sus||{}; const n = Object.keys(g).length; if (!n || !victim) return "";
     const answer = victim.name;
     const right = Object.entries(g).filter(([by,v]) => Array.isArray(v) && v.includes(answer)).map(([by,v]) => v[0]===answer ? by+" ⭐" : by);
     return `<p class="small" style="color:var(--gold)">${right.length ? `🔮 Had it in their top 3: <b>${right.map(esc).join(", ")}</b> (${right.length} of ${n}). ⭐ = guessed it first.` : `🔮 Nobody saw it coming. ${n} people guessed.`}</p>`; })();
