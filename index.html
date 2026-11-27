@@ -149,9 +149,65 @@ function subscribe(topics, onMsg, onStatus){
   es.onmessage = e => { try{ const d = JSON.parse(e.data); if (d.event==="message") onMsg(d.topic, JSON.parse(d.message)); }catch(_){} };
 }
 let lastSent = "", pubTimer = null;
+const TRIVIA = [
+["In what year was the Pilgrims' first harvest feast at Plymouth?", ["1621","1492","1776","1607"]],
+["Which president made Thanksgiving a national holiday in 1863?", ["Abraham Lincoln","George Washington","Thomas Jefferson","Ulysses S. Grant"]],
+["What is a male turkey called?", ["Tom","Buck","Rooster","Drake"]],
+["What is a baby turkey called?", ["Poult","Kit","Cygnet","Joey"]],
+["Which state raises the most turkeys in the US?", ["Minnesota","Texas","Florida","Maine"]],
+["The red flap of skin under a turkey's beak is called a...", ["Wattle","Comb","Crest","Gizzard"]],
+["Which ship brought the Pilgrims to America?", ["Mayflower","Santa Maria","Endeavour","Beagle"]],
+["Which Native American people shared the 1621 feast with the Pilgrims?", ["Wampanoag","Cherokee","Sioux","Navajo"]],
+["What day of the week is US Thanksgiving always on?", ["Thursday","Friday","Monday","Sunday"]],
+["Which country celebrates Thanksgiving in October?", ["Canada","Mexico","England","Australia"]],
+["What fruit is cranberry sauce made from?", ["Cranberries","Cherries","Raspberries","Red currants"]],
+["Which football team plays every Thanksgiving Day at home in Detroit?", ["Lions","Bears","Packers","Vikings"]],
+["Which store's parade is held in New York on Thanksgiving?", ["Macy's","Target","Walmart","Sears"]],
+["What is the wishbone's real name?", ["Furcula","Sternum","Clavicle","Tibia"]],
+["Pumpkins are technically a...", ["Fruit","Vegetable","Root","Grain"]],
+["The day after Thanksgiving is called...", ["Black Friday","Cyber Monday","Boxing Day","Small Business Saturday"]],
+["How many legs does a spider have?", ["8","6","10","12"]],
+["What is the largest planet in our solar system?", ["Jupiter","Saturn","Neptune","Earth"]],
+["What is the capital of Canada?", ["Ottawa","Toronto","Vancouver","Montreal"]],
+["How many minutes are in a day?", ["1,440","1,200","2,400","3,600"]],
+["What is the largest ocean on Earth?", ["Pacific","Atlantic","Indian","Arctic"]],
+["Which animal is known as the king of the jungle?", ["Lion","Tiger","Elephant","Gorilla"]],
+["What gas do plants take in from the air?", ["Carbon dioxide","Oxygen","Helium","Nitrogen"]],
+["How many players are on a soccer team on the field?", ["11","9","10","12"]],
+["What is frozen water called?", ["Ice","Steam","Fog","Dew"]],
+["Which planet is called the Red Planet?", ["Mars","Venus","Mercury","Jupiter"]],
+["How many sides does a hexagon have?", ["6","5","7","8"]],
+["What color do you get mixing blue and yellow?", ["Green","Purple","Orange","Brown"]],
+["Which is the tallest animal?", ["Giraffe","Elephant","Camel","Ostrich"]],
+["How many continents are there?", ["7","5","6","8"]],
+["What is the hardest natural substance?", ["Diamond","Gold","Iron","Quartz"]],
+["Which US state is the largest by area?", ["Alaska","Texas","California","Montana"]],
+["In what sport do you score a touchdown?", ["Football","Baseball","Hockey","Golf"]],
+["What is the main ingredient in guacamole?", ["Avocado","Tomato","Pea","Cucumber"]],
+["How many days are in a leap year?", ["366","365","364","367"]],
+["Which bird can fly backwards?", ["Hummingbird","Eagle","Sparrow","Owl"]],
+["What is the closest star to Earth?", ["The Sun","Polaris","Sirius","Vega"]],
+["Who painted the Mona Lisa?", ["Leonardo da Vinci","Picasso","Van Gogh","Michelangelo"]],
+["How many hearts does an octopus have?", ["3","1","2","4"]],
+["What is the boiling point of water in Fahrenheit at sea level?", ["212","100","180","250"]],
+["Which mountain is the tallest above sea level?", ["Everest","K2","Kilimanjaro","Denali"]],
+["What do bees make?", ["Honey","Silk","Wax only","Milk"]],
+["How many strings does a standard guitar have?", ["6","4","5","8"]],
+["Which metal is liquid at room temperature?", ["Mercury","Lead","Tin","Silver"]],
+["What is the national bird of the United States?", ["Bald eagle","Turkey","Robin","Hawk"]],
+];
+
+const MATCHQ = ["Who's the best actor at the table?","Who's acting the most suspicious right now?","Who will be banished at this round table?","Who will the Traitors murder tonight?","Who's the most convincing Faithful?","Who's the worst liar here?","Who's talking the most?","Who would make the best Traitor?","Who will make it to the very end?","Who's the sneakiest player?"];
+const GQN = 5, TRIV_SECS = 15;
+function seeded(n, seed){ const a=[...Array(n).keys()]; let x = seed*9301+49297; for (let i=n-1;i>0;i--){ x=(x*9301+49297)%233280; const j=Math.floor(x/233280*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function ghostQs(mode, round){
+  if (mode==="match"){ const o = seeded(MATCHQ.length, round); return o.slice(0,GQN).map(i=>({q:MATCHQ[i]})); }
+  const o = seeded(TRIVIA.length, 7); const start = ((round-1)*GQN) % TRIVIA.length;
+  return [...Array(GQN).keys()].map(k => { const t = TRIVIA[o[(start+k)%TRIVIA.length]]; return {q:t[0], right:t[1][0], choices: seeded(t[1].length, round*31+k).map(i=>t[1][i])}; });
+}
 function publicState(){
   const pl = S.players.map(p=>({n:p.name, s:p.status[0], sh:(p.shield && !S.secretShields)?1:0}));
-  return {k:"state", gp:S.ghostPts||{}, gs:!!S.shields, round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
+  return {k:"state", gp:S.ghostPts||{}, gs:!!S.shields, gw:ghostWonNow(), gm:ghostMode(), ga:Object.values((S.gans||{})[S.round]||{}).filter(a=>a.ans&&a.ans.length>=GQN).length, gc:S.players.filter(p=>p.status!=="alive").length, round:S.round, phase:S.phase, redo:S.redo||0, win:!!(S.window && !S.locked), called:S.called||[], ann:announceText(), ends:S.endsAt||"",
     players:pl, over: S.phase==="over" ? {w:S.winner, t:S.players.filter(p=>p.traitor).map(p=>p.name)} : null};
 }
 function broadcast(){
@@ -163,12 +219,13 @@ let hostSub = false, relayOK = null, hostReady = false; setTimeout(()=>{ hostRea
 function hostListen(){
   if (hostSub || !S || !S.tid) return; hostSub = true;
   subscribe([S.tid].concat(S.players.map(p=>p.pt).filter(Boolean)), (topic, m) => {
-    if (S && (m.k==="gvote"||m.k==="pred"||m.k==="wpred")){
+    if (S && (m.k==="gvote"||m.k==="pred"||m.k==="wpred"||m.k==="gans")){
       const p = S.players.find(x=>x.pt===topic); if (!p || p.status==="alive") return;
       if (m.k==="gvote" && m.round===S.round){ S.gvotes = S.gvotes||{}; (S.gvotes[S.round] = S.gvotes[S.round]||{})[p.name] = m.v; }
+      if (m.k==="gans" && m.round===S.round && Array.isArray(m.ans)){ S.gans = S.gans||{}; (S.gans[S.round] = S.gans[S.round]||{})[p.name] = {ans:m.ans.slice(0,GQN).map(String)}; }
       if (m.k==="pred"){ S.preds = S.preds||{}; (S.preds[m.round] = S.preds[m.round]||{})[p.name] = m.v; }
       if (m.k==="wpred"){ S.wpred = S.wpred||{}; S.wpred[p.name] = m.v; }
-      save(); return;
+      save(); if (m.k==="gans" && S.phase==="mission" && hostReady && document.getElementById("toTable") && $("#ov").hidden) render(); return;
     }
     if (S && m.k==="sus"){
       const p = S.players.find(x=>x.pt===topic);
@@ -410,6 +467,7 @@ function renderPersonal(){
       else if (m.k==="shield"){ myShield = m; claimMsg = ""; }
       else if (m.k==="ghost"){ ghostInfo = m.t; }
       else if (m.k==="gshield"){ gShieldMsg = m; }
+      else if (m.k==="gans" && Array.isArray(m.ans)){ if (!myGAns || myGAns.round<=m.round) myGAns = {round:m.round, ans:m.ans.slice()}; }
       else if (m.k==="gvote"){ myGVote = {round:m.round, v:m.v}; }
       else if (m.k==="pred"){ myPred[m.round] = m.v; }
       else if (m.k==="wpred"){ myWPred = m.v; }
@@ -482,6 +540,8 @@ function renderLive(){
   el.innerHTML = html;
   const gs = $("#gShow"); if (gs) gs.onclick = () => { showTraitors = true; renderLive(); };
   const gh = $("#gHide"); if (gh) gh.onclick = () => { showTraitors = false; renderLive(); };
+  const tg = $("#tqGo"); if (tg) tg.onclick = () => { trivStarted = true; renderLive(); };
+  el.querySelectorAll("[data-ga]").forEach(b => b.onclick = () => ghostAnswer(b.dataset.ga));
   el.querySelectorAll("[data-gv]").forEach(b => b.onclick = () => { myGVote = {round: live.round, v: b.dataset.gv}; publish(personal.pt, {k:"gvote", round: live.round, v: b.dataset.gv}); renderLive(); });
   el.querySelectorAll("[data-pred]").forEach(b => b.onclick = () => { const r = (live.phase==="night"||live.phase==="breakfast") ? live.round+1 : live.round; myPred[r] = b.dataset.pred; publish(personal.pt, {k:"pred", round: r, v: b.dataset.pred}); renderLive(); });
   el.querySelectorAll("[data-wp]").forEach(b => b.onclick = () => { myWPred = b.dataset.wp; publish(personal.pt, {k:"wpred", v: myWPred}); renderLive(); });
@@ -514,6 +574,9 @@ function offerPanel(){
    <button class="primary wide" id="offYes">Join the Traitors</button>
    <button class="wide" id="offNo">Refuse, and be murdered</button></div>`;
 }
+let myGAns = null, trivQ = null, trivStarted = false;
+setInterval(() => { const t = document.getElementById("tqTime"); if (!t || !trivQ || !live || !myGAns) return; const left = Math.ceil((trivQ.end-Date.now())/1000); t.textContent = Math.max(0,left); if (left<=0 && myGAns.round===trivQ.round && myGAns.ans.length===trivQ.i){ ghostAnswer(""); } }, 500);
+function ghostAnswer(v){ myGAns.ans.push(v); trivQ = null; publish(personal.pt, {k:"gans", round: myGAns.round, ans: myGAns.ans.slice()}); renderLive(); }
 let ghostInfo = null, myGVote = null, myPred = {}, myWPred = null, gShieldMsg = null, showTraitors = false;
 function ghostPanel(P, mine){
   const how = mine.s==="m" ? "murdered" : "banished";
@@ -527,10 +590,32 @@ function ghostPanel(P, mine){
       ? `<p>The Traitors are: <b style="color:var(--blood)">${(ghostInfo||[]).map(n=>{ const st=(P.find(p=>p.n===n)||{}).s; return esc(n)+(st==="b"?" (banished)":st==="m"?" (out)":""); }).join(", ") || "loading…"}</b></p><button class="ghost" id="gHide">Hide</button>`
       : `<p>See who the Traitors really are. Make sure nobody is looking.</p><button class="primary wide" id="gShow">Show me the Traitors</button>`}</div>`;
   if (live.gs){
-    if (live.phase==="mission" || live.phase==="table" || live.phase==="lobby")
-      h += `<div class="card"><h3>2. Ghost shield</h3><p>The ghosts vote together to secretly protect one living player tonight. Most votes wins. Voting closes when night falls.</p>
+    if (live.phase==="mission" || live.phase==="table" || live.phase==="lobby"){
+      const mode = live.gm || "trivia"; const qs = ghostQs(mode, live.round);
+      if (!myGAns || myGAns.round!==live.round) myGAns = {round: live.round, ans: []};
+      const n = myGAns.ans.length;
+      h += `<div class="card" style="border-color:var(--gold)"><h3>2. Ghost game: win a shield</h3>`;
+      h += mode==="match"
+        ? `<p><b>Matching game.</b> Answer 5 questions about the living players. If you ghosts give the <b>same answer on 3 of 5</b>, you win a secret shield to give out tonight. No comparing answers with the other ghosts!</p>`
+        : `<p><b>Ghost trivia.</b> 5 questions, ${TRIV_SECS} seconds each, no looking it up. Get <b>3 right</b> and you win a secret shield to give out tonight.</p>`;
+      if (n < GQN){
+        const q = qs[n];
+        if (mode==="trivia" && !trivStarted) h += `<button class="primary wide" id="tqGo">${n?"Keep going":"Start trivia"} (question ${n+1} of ${GQN})</button>`;
+        else {
+          if (mode==="trivia" && !(trivQ && trivQ.round===live.round && trivQ.i===n)) trivQ = {round: live.round, i: n, end: Date.now()+TRIV_SECS*1000};
+          const opts = mode==="match" ? P.filter(p=>p.s==="a").map(p=>p.n) : q.choices;
+          h += `<p class="small muted">Question ${n+1} of ${GQN}${mode==="trivia"?` · <b id="tqTime">${Math.max(0,Math.ceil((trivQ.end-Date.now())/1000))}</b>s left`:""}</p><p><b>${esc(q.q)}</b></p>
+            <div class="victims">${opts.map(o=>`<button data-ga="${esc(o)}">${esc(o)}</button>`).join("")}</div>`;
+        }
+      } else {
+        const mine = mode==="trivia" ? qs.filter((q,i)=>myGAns.ans[i]===q.right).length : null;
+        h += `<p>✅ You're done${mine!==null?`: <b>${mine} of ${GQN}</b> right`:""}. ${live.gc>1?`${live.ga||0} of ${live.gc} ghosts finished.`:""}</p>`;
+        h += live.gw===true ? `<p style="color:var(--gold)"><b>The ghosts won!</b> Your shield vote below counts tonight.</p>` : `<p class="muted">${mode==="match"?"No win yet. It depends on the other ghosts' answers.":"Not enough right this time, so no ghost shield unless the host says otherwise."}</p>`;
+      }
+      h += `<p style="margin-top:14px"><b>Ghost shield vote.</b> If the ghosts win, the living player with the most ghost votes is secretly protected tonight.</p>
         <div class="victims">${alive.map(p=>`<button data-gv="${esc(p.n)}" class="${myGVote&&myGVote.round===live.round&&myGVote.v===p.n?"gold":""}">${esc(p.n)}</button>`).join("")}</div></div>`;
-    else h += `<div class="card"><h3>2. Ghost shield</h3><p>${gShieldMsg&&gShieldMsg.round===live.round ? (gShieldMsg.v ? `Tonight the ghosts are protecting <b style="color:var(--gold)">${esc(gShieldMsg.v)}</b>.` : "No ghost shield tonight.") : "Voting is closed for tonight. It opens again with the next challenge."}</p></div>`;
+    }
+    else h += `<div class="card"><h3>2. Ghost game: win a shield</h3><p>${gShieldMsg&&gShieldMsg.round===live.round ? (gShieldMsg.v ? `The ghosts won! Tonight they're protecting <b style="color:var(--gold)">${esc(gShieldMsg.v)}</b>.` : gShieldMsg.lost ? `The ghosts didn't win their game, so there's no ghost shield tonight.${gShieldMsg.detail?" "+esc(gShieldMsg.detail):""}` : "The ghosts won, but nobody voted, so there's no ghost shield tonight.") : "The game is closed for tonight. A new one opens with the next challenge."}</p></div>`;
   }
   const myP = myPred[predRound];
   h += `<div class="card"><h3>3. Ghost predictions</h3><p>Who will be banished at the ${predRound===live.round?"":"next "}round table? 1 point if you're right.</p>
@@ -698,7 +783,7 @@ function renderHost(){
   if (S.phase==="over") return renderOver();
   const ph = S.phase==="final" ? "table" : S.phase;
   let body = "";
-  if (S.phase==="mission") body = missionCard();
+  if (S.phase==="mission") body = ghostChallengeCard() + missionCard();
   else if (S.phase==="table") body = tableCard();
   else if (S.phase==="final") body = finalCard();
   else if (S.phase==="night") body = nightCard();
@@ -726,6 +811,17 @@ function chip(p){
 const WORDS = ["OWL","RAVEN","CANDLE","DAGGER","ACORN","LANTERN","CROWN","GOBLET","TURRET","CLOAK","FEATHER","GRAVY"];
 function ensureCode(){ if (S.codeRound!==S.round){ S.codeRound=S.round; S.shieldCode=WORDS[Math.floor(Math.random()*WORDS.length)]; S.codeClaimed=false; S.winners=[]; S.drawn=0; save(); } }
 function giveShield(p, ghost){ p.shield = true; publish(p.pt, {k:"shield", round:S.round, on:true, ghost:!!ghost}); }
+function ghostChallengeCard(){
+  if (!S.shields) return "";
+  const ghosts = S.players.filter(p=>p.status!=="alive"); if (!ghosts.length) return "";
+  const o = (S.ghostWon||{})[S.round]; const res = ghostResult(); const mode = ghostMode();
+  const done = Object.values((S.gans||{})[S.round]||{}).filter(a=>a.ans&&a.ans.length>=GQN).length;
+  return `<div class="card" style="border-color:var(--gold)"><h3>👻 Ghost game</h3>
+    <p>The ghosts (${ghosts.map(g=>esc(g.name)).join(", ")}) are playing ${mode==="match"?"<b>the matching game</b> on their phones. They win if they give the same answers on 3 of 5 questions":"<b>phone trivia</b>. They win with 3 of 5 right"}. If they win, they secretly give out one shield tonight. If they lose, there's no ghost shield.</p>
+    <p class="small">${done} of ${ghosts.length} ghost${ghosts.length===1?"":"s"} finished. ${o===undefined?(res.won?"✅ They're winning right now.":"Not won yet."):""}</p>
+    <p class="small muted">Override if a phone isn't working:</p>
+    <div class="row"><button data-gw="1" class="${o===true?"gold":""}" style="flex:1">Ghosts won</button><button data-gw="0" class="${o===false?"gold":""}" style="flex:1">Ghosts lost</button>${o!==undefined?`<button data-gw="x" style="flex:1">Auto</button>`:""}</div></div>`;
+}
 function missionCard(){
   if (S.shields && S.secretShields){
     ensureCode();
@@ -797,6 +893,7 @@ function wireHost(){
   $("#links").onclick = linksBox;
   app.querySelectorAll("[data-shield]").forEach(b => b.onclick = () => { const p=byKey(b.dataset.shield); p.shield=!p.shield; if (S.secretShields) publish(p.pt, {k:"shield", round:S.round, on:p.shield}); save(); render(); });
   app.querySelectorAll("[data-win]").forEach(b => b.onclick = () => { const k=b.dataset.win; S.winners = (S.winners||[]); S.winners = S.winners.includes(k) ? S.winners.filter(x=>x!==k) : S.winners.concat(k); save(); render(); });
+  app.querySelectorAll("[data-gw]").forEach(b => b.onclick = () => { S.ghostWon = S.ghostWon||{}; if (b.dataset.gw==="x") delete S.ghostWon[S.round]; else S.ghostWon[S.round] = b.dataset.gw==="1"; save(); render(); });
   const dr = $("#draw"); if (dr) dr.onclick = () => { const pool = (S.winners||[]).map(byKey).filter(p=>p.status==="alive"); if(!pool.length) return; giveShield(pool[Math.floor(Math.random()*pool.length)]); S.drawn=(S.drawn||0)+1; S.winners=[]; save(); render(); };
   const di = $("#direct"); if (di) di.onclick = () => {
     ov.hidden=false; ov.innerHTML = `<div class="inner"><h2>Who gets the shield?</h2><p class="muted small">Only you should see this screen.</p><div class="victims">${alive().map(p=>`<button data-direct="${esc(p.key)}">${esc(p.name)}</button>`).join("")}</div><button class="wide ghost" id="dx">Cancel</button></div>`;
@@ -864,14 +961,31 @@ function checkWin(){
   if (t>=f){ S.winner="traitors"; S.phase="over"; return true; }
   return false;
 }
+function ghostMode(){ return S.players.filter(p=>p.status!=="alive").length>=2 ? "match" : "trivia"; }
+function ghostResult(){
+  const ghosts = S.players.filter(p=>p.status!=="alive"); const mode = ghostMode();
+  const ans = (S.gans||{})[S.round]||{};
+  if (!ghosts.length) return {won:false, text:"No ghosts yet."};
+  if (mode==="trivia"){
+    const qs = ghostQs("trivia", S.round); const sc = ghosts.map(g => { const a=(ans[g.name]||{}).ans||[]; return qs.filter((q,i)=>a[i]===q.right).length; });
+    const best = Math.max(...sc); return {won: best>=3, text:`Trivia score: ${best} of ${GQN} (needs 3).`};
+  }
+  let matched = 0;
+  for (let i=0;i<GQN;i++){ const c={}; ghosts.forEach(g => { const v=((ans[g.name]||{}).ans||[])[i]; if (v) c[v]=(c[v]||0)+1; });
+    const top = Math.max(0, ...Object.values(c)); if (top>=2 && top*2>=ghosts.length) matched++; }
+  return {won: matched>=3, text:`Matched ${matched} of ${GQN} answers (needs 3).`};
+}
+function ghostWonNow(){ const o=(S.ghostWon||{})[S.round]; return o===undefined ? (S.players.some(p=>p.status!=="alive") ? ghostResult().won : undefined) : o; }
 function ghostShield(){
   if (!S.shields) return;
+  const res = ghostResult(); const o=(S.ghostWon||{})[S.round]; const won = o===undefined ? res.won : o;
   const votes = (S.gvotes||{})[S.round] || {}; const c = {};
   Object.values(votes).forEach(v => { const p = S.players.find(x=>x.name===v); if (p && p.status==="alive") c[v]=(c[v]||0)+1; });
   const top = Object.entries(c); let pick = null;
   if (top.length){ const mx = Math.max(...top.map(x=>x[1])); const t = top.filter(x=>x[1]===mx).map(x=>x[0]); pick = t[Math.floor(Math.random()*t.length)]; }
+  if (!won) pick = null;
   if (pick){ giveShield(S.players.find(x=>x.name===pick), true); logit("The ghosts gave out a secret shield."); }
-  S.players.filter(p=>p.status!=="alive").forEach(g => publish(g.pt, {k:"gshield", round:S.round, v: pick || ""}));
+  S.players.filter(p=>p.status!=="alive").forEach(g => publish(g.pt, {k:"gshield", round:S.round, v: pick || "", lost: !won, detail: o===undefined ? res.text : ""}));
 }
 function openWindow(){ ghostShield(); S.sus={}; S.redo=0; S.window=true; S.locked=false; S.picks={}; S.murder=null; S.offer=null;
   S.mode = S.recruit ? "recruit" : "murder"; S.recruit = false;
