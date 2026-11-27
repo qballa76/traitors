@@ -468,11 +468,11 @@ let mySus = null;
 function suspectPanel(P){
   const me = personal.name;
   if (!murderOpen) return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><p>Night has fallen. Make sure nobody can see your screen.</p><button class="primary wide" id="mOpen">Open your night screen</button></div>`;
-  const others = P.filter(p => p.s==="a" && p.n!==me);
-  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>Who do you suspect?</h2>
-   <p>Pick the person you think is a Traitor. Your answer is anonymous. The results are revealed at breakfast.</p>
-   <div class="victims">${others.map(v=>`<button data-sus="${esc(v.n)}" class="${mySus===v.n?"primary":""}">${esc(v.n)}</button>`).join("")}</div>
-   <button data-sus="-" class="${mySus==="-"?"primary":"ghost"}">Not sure yet</button>
+  const others = P.filter(p => p.s==="a");
+  return `<div class="card" style="border-color:var(--blood)"><div class="eyebrow">Night</div><h2>Who will be murdered?</h2>
+   <p>Guess who the Traitors are murdering tonight. Everyone who guesses right is named at breakfast.</p>
+   <div class="victims">${others.map(v=>`<button data-sus="${esc(v.n)}" class="${mySus===v.n?"primary":""}">${esc(v.n===me?v.n+" (me)":v.n)}</button>`).join("")}</div>
+   <button data-sus="-" class="${mySus==="-"?"primary":"ghost"}">Nobody tonight</button>
    ${mySus?`<p class="small" style="color:var(--gold)">Your answer is in. You can change it until breakfast.</p>`:""}
    <button class="ghost" id="mHide">Hide this screen</button></div>`;
 }
@@ -918,10 +918,10 @@ function breakfast(){
       <button class="gold wide" id="call" style="min-height:70px">${idx>=queue.length?"Everyone's called. Who's missing?":"Call the next guest"}</button></div>`;
     $("#call",ov).onclick = call;
   };
-  const susLine = (() => { const c = {}; Object.values(S.sus||{}).forEach(v => { if (v && v!=="-") c[v]=(c[v]||0)+1; });
-    const top = Object.entries(c).sort((a,b)=>b[1]-a[1]); if (!top.length) return "";
-    const best = top.filter(x=>x[1]===top[0][1]).map(x=>x[0]);
-    return `<p class="small" style="color:var(--gold)">Last night's suspicion poll: most suspected <b>${best.map(esc).join(" and ")}</b> (${top[0][1]} vote${top[0][1]===1?"":"s"} each).</p>`.replace(" each)", best.length>1?" each)":")"); })();
+  const susLine = (() => { const g = S.sus||{}; const n = Object.keys(g).length; if (!n) return "";
+    const answer = victim ? victim.name : "-";
+    const right = Object.entries(g).filter(([by,v]) => v===answer).map(([by])=>by);
+    return `<p class="small" style="color:var(--gold)">${right.length ? `🔮 Guessed it right: <b>${right.map(esc).join(", ")}</b> (${right.length} of ${n}).` : `🔮 Nobody guessed it. ${n} guess${n===1?"":"es"} were made.`}</p>`; })();
   const finale = () => {
     if (!victim){
       logit(blocked ? "The Traitors' victim was protected by a shield." : "The Traitors spared everyone.");
